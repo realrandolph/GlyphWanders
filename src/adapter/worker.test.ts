@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import {randomUUID} from 'node:crypto'
 import {mkdtemp, readFile, rm} from 'node:fs/promises'
 import {createServer} from 'node:http'
-import {createRequire} from 'node:module'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {after, test} from 'node:test'
@@ -18,14 +17,6 @@ import {build} from 'esbuild'
 import {exportJWK, generateKeyPair, SignJWT} from 'jose'
 import * as miniflare from 'miniflare'
 import {toolDefinitions} from '../shared/tools.ts'
-
-// Use the newest installed workerd if available; Miniflare's bundled copy may
-// predate the production compatibility date.
-try {
-  process.env.MINIFLARE_WORKERD_PATH ??= createRequire(import.meta.url).resolve(
-    'workerd/bin/workerd',
-  )
-} catch {}
 
 const PUBLIC_URL = 'https://glyph-worker.example.workers.dev'
 const ISSUER = 'https://auth.example/'
@@ -56,51 +47,43 @@ await build({
 })
 const bundleSource = await readFile(bundlePath, 'utf8')
 
-type Strategy = {date: string; flags?: string[]}
-const convertV4 = (
-  miniflare as unknown as {
-    convertV4MiniflareOptions?: (options: unknown) => unknown
-  }
-).convertV4MiniflareOptions
-const isV5 = typeof convertV4 === 'function'
-// Prefer the production compatibility date. Older Miniflare/workerd builds
-// reject dates newer than their binary; the fallback date still has Node
-// compatibility enabled by default and the same node:http server support.
-const strategies: Strategy[] = isV5
-  ? [{date: '2026-10-24'}, {date: '2026-08-03', flags: ['nodejs_compat']}]
-  : [{date: '2026-08-03', flags: ['nodejs_compat']}]
-let chosen: Strategy | undefined
+const COMPATIBILITY_DATE = '2026-10-24'
+type ConvertedOptions = {
+  workers: {config: {compatibilityDate?: string}}[]
+}
 
 async function createWorker(
   t: import('node:test').TestContext,
   options: Record<string, unknown> = {},
 ) {
-  const attempts = chosen ? [chosen] : strategies
-  let lastError: unknown
-  for (const strategy of attempts) {
-    let mf: InstanceType<typeof miniflare.Miniflare> | undefined
-    try {
-      const workerOptions = {
-        modules: true,
-        script: bundleSource,
-        compatibilityDate: strategy.date,
-        compatibilityFlags: strategy.flags,
-        log: new miniflare.Log(miniflare.LogLevel.NONE),
-        ...options,
-      }
-      mf = new miniflare.Miniflare(
-        (isV5 ? convertV4?.(workerOptions) : workerOptions) as never,
-      )
-      await mf.ready
-      chosen = strategy
-      t.after(() => mf?.dispose())
-      return mf
-    } catch (error) {
-      lastError = error
-      await mf?.dispose().catch(() => {})
-    }
+  const workerOptions = {
+    modules: true,
+    script: bundleSource,
+    compatibilityDate: COMPATIBILITY_DATE,
+    log: new miniflare.Log(miniflare.LogLevel.NONE),
+    ...options,
   }
-  throw lastError
+  // The pinned Miniflare v5 API converts v4-style options. Assert the date
+  // survived conversion, then let workerd start with exactly that date: no
+  // fallback date or alternate workerd path is allowed.
+  const converted = miniflare.convertV4MiniflareOptions(
+    workerOptions as never,
+  ) as unknown as ConvertedOptions
+  assert.equal(
+    converted.workers[0]?.config.compatibilityDate,
+    COMPATIBILITY_DATE,
+    'Miniflare must run the production compatibility date',
+  )
+  t.diagnostic(`workerd compatibility date ${COMPATIBILITY_DATE}`)
+  const mf = new miniflare.Miniflare(converted as never)
+  try {
+    await mf.ready
+  } catch (error) {
+    await mf.dispose().catch(() => {})
+    throw error
+  }
+  t.after(() => mf.dispose())
+  return mf
 }
 
 const {privateKey, publicKey} = await generateKeyPair('RS256')
@@ -110,7 +93,12 @@ const jwk = {...signingKey, kid: 'test-key', alg: 'RS256', use: 'sig'}
 
 async function sign(
   payload: Record<string, unknown> = {},
-  options: {issuer?: string; audience?: string; key?: CryptoKey} = {},
+  options: {
+    issuer?: string
+    audience?: string
+    key?: CryptoKey
+    kid?: string
+  } = {},
 ) {
   const now = Math.floor(Date.now() / 1000)
   return new SignJWT({
@@ -119,7 +107,7 @@ async function sign(
     exp: now + 300,
     ...payload,
   })
-    .setProtectedHeader({alg: 'RS256', kid: 'test-key'})
+    .setProtectedHeader({alg: 'RS256', kid: options.kid ?? 'test-key'})
     .setIssuer(options.issuer ?? ISSUER)
     .setAudience(options.audience ?? `${PUBLIC_URL}/mcp`)
     .sign(options.key ?? privateKey)
@@ -171,19 +159,58 @@ after(async () => {
   await rm(bundleDir, {recursive: true, force: true})
 })
 
-function mockOutbound(counters: {
+type Counters = {
   discovery: number
   jwks: number
   devvit: number
-}) {
+  redirects: number
+}
+type DiscoveryMode = 'ok' | 'redirect'
+type JwksMode = 'ok' | 'redirect'
+type DevvitMode =
+  | 'proxy'
+  | 'redirect'
+  | 'reject'
+  | 'rate-limit'
+  | 'accepted'
+  | 'no-content'
+type MockOptions = {
+  discovery?: DiscoveryMode
+  jwks?: JwksMode
+  devvit?: DevvitMode | DevvitMode[] | (() => DevvitMode)
+  keys?: () => unknown[]
+  jwksDelayMs?: () => number
+}
+const REDIRECT_TARGET = 'https://redirected.example/not-followed'
+
+function redirectResponse() {
+  return new Response('redirect target must not be followed', {
+    status: 302,
+    headers: {Location: REDIRECT_TARGET},
+  })
+}
+
+function mockOutbound(counters: Counters, options: MockOptions = {}) {
   return async (request: Request) => {
+    if (request.url === REDIRECT_TARGET) {
+      counters.redirects++
+      return new Response('redirect followed', {status: 200})
+    }
     if (request.url === DISCOVERY) {
       counters.discovery++
-      return Response.json({issuer: ISSUER, jwks_uri: JWKS})
+      switch (options.discovery ?? 'ok') {
+        case 'redirect':
+          return redirectResponse()
+        default:
+          return Response.json({issuer: ISSUER, jwks_uri: JWKS})
+      }
     }
     if (request.url === JWKS) {
       counters.jwks++
-      return Response.json({keys: [jwk]})
+      const delay = options.jwksDelayMs?.() ?? 0
+      if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay))
+      if (options.jwks === 'redirect') return redirectResponse()
+      return Response.json({keys: (options.keys ?? (() => [jwk]))()})
     }
     if (request.url !== MCP_URL) {
       counters.devvit++
@@ -194,10 +221,32 @@ function mockOutbound(counters: {
       request.headers.get('authorization'),
       `Bearer ${MANAGED_TOKEN}`,
     )
-    if (rejectUpstream)
-      return new Response(`private upstream error ${MANAGED_TOKEN}`, {
-        status: 401,
-      })
+    const configured = options.devvit
+    const mode =
+      typeof configured === 'function'
+        ? configured()
+        : Array.isArray(configured)
+          ? (configured.shift() ?? 'proxy')
+          : (configured ?? 'proxy')
+    switch (mode) {
+      case 'redirect':
+        return redirectResponse()
+      case 'reject':
+        return new Response(`private upstream error ${MANAGED_TOKEN}`, {
+          status: 401,
+        })
+      case 'rate-limit':
+        return new Response('private upstream rate limit', {
+          status: 429,
+          headers: {'Retry-After': '17'},
+        })
+      case 'accepted':
+        return new Response(null, {status: 202})
+      case 'no-content':
+        return new Response(null, {status: 204})
+      case 'proxy':
+        break
+    }
     const headers = new Headers()
     for (const name of [
       'authorization',
@@ -234,7 +283,7 @@ function post(
 }
 
 test('unconfigured Worker is safe, reports readiness, and makes no network calls', async t => {
-  const counters = {discovery: 0, jwks: 0, devvit: 0}
+  const counters = {discovery: 0, jwks: 0, devvit: 0, redirects: 0}
   const mf = await createWorker(t, {outboundService: mockOutbound(counters)})
 
   const health = await mf.dispatchFetch('http://localhost/health')
@@ -266,11 +315,16 @@ test('unconfigured Worker is safe, reports readiness, and makes no network calls
   const unknown = await mf.dispatchFetch('http://localhost/worker/claim')
   assert.equal(unknown.status, 404)
   assert.deepEqual(await unknown.json(), {error: 'Not found'})
-  assert.deepEqual(counters, {discovery: 0, jwks: 0, devvit: 0})
+  assert.deepEqual(counters, {
+    discovery: 0,
+    jwks: 0,
+    devvit: 0,
+    redirects: 0,
+  })
 })
 
 test('invalid and partial configuration never exposes values or makes network calls', async t => {
-  const counters = {discovery: 0, jwks: 0, devvit: 0}
+  const counters = {discovery: 0, jwks: 0, devvit: 0, redirects: 0}
   const mf = await createWorker(t, {
     bindings: {
       ...config,
@@ -295,11 +349,16 @@ test('invalid and partial configuration never exposes values or makes network ca
   ).text()
   assert.deepEqual(JSON.parse(mcpText), {error: 'Service unavailable'})
   assert.doesNotMatch(mcpText, new RegExp(SECRET))
-  assert.deepEqual(counters, {discovery: 0, jwks: 0, devvit: 0})
+  assert.deepEqual(counters, {
+    discovery: 0,
+    jwks: 0,
+    devvit: 0,
+    redirects: 0,
+  })
 })
 
 test('configured health and OAuth metadata are configuration-only and network-free', async t => {
-  const counters = {discovery: 0, jwks: 0, devvit: 0}
+  const counters = {discovery: 0, jwks: 0, devvit: 0, redirects: 0}
   const mf = await createWorker(t, {
     bindings: {...config, HOST: 123, PORT: 'not-a-port'},
     outboundService: mockOutbound(counters),
@@ -323,14 +382,21 @@ test('configured health and OAuth metadata are configuration-only and network-fr
     scopes_supported: ['glyph:read', 'glyph:publish', 'glyph:state'],
   })
   assert.doesNotMatch(metadataText, new RegExp(MANAGED_TOKEN))
-  assert.deepEqual(counters, {discovery: 0, jwks: 0, devvit: 0})
+  assert.deepEqual(counters, {
+    discovery: 0,
+    jwks: 0,
+    devvit: 0,
+    redirects: 0,
+  })
 })
 
 test('real MCP initialize/list/call proxies with managed credentials and caches completed auth', async t => {
-  const counters = {discovery: 0, jwks: 0, devvit: 0}
+  const counters = {discovery: 0, jwks: 0, devvit: 0, redirects: 0}
   const mf = await createWorker(t, {
     bindings: config,
-    outboundService: mockOutbound(counters),
+    outboundService: mockOutbound(counters, {
+      devvit: () => (rejectUpstream ? 'reject' : 'proxy'),
+    }),
   })
   const url = await mf.ready
   const owner = await sign()
@@ -508,7 +574,7 @@ test('real MCP initialize/list/call proxies with managed credentials and caches 
 })
 
 test('per-isolate rate limit returns a generic 429 without outbound traffic', async t => {
-  const counters = {discovery: 0, jwks: 0, devvit: 0}
+  const counters = {discovery: 0, jwks: 0, devvit: 0, redirects: 0}
   const mf = await createWorker(t, {
     bindings: config,
     outboundService: mockOutbound(counters),
@@ -532,5 +598,192 @@ test('per-isolate rate limit returns a generic 429 without outbound traffic', as
   assert.equal(limited.status, 429)
   assert.equal(limited.headers.get('retry-after'), '60')
   assert.deepEqual(await limited.json(), {error: 'Rate limited'})
-  assert.deepEqual(counters, {discovery: 0, jwks: 0, devvit: 0})
+  assert.deepEqual(counters, {
+    discovery: 0,
+    jwks: 0,
+    devvit: 0,
+    redirects: 0,
+  })
+})
+
+test('Worker rejects discovery, JWKS, and Devvit redirects without following them', async t => {
+  const scenarios: {
+    name: string
+    options: MockOptions
+    foreignSignature?: boolean
+    status: number
+    counters: Counters
+  }[] = [
+    {
+      name: 'discovery redirect',
+      options: {discovery: 'redirect'},
+      foreignSignature: true,
+      status: 401,
+      counters: {discovery: 1, jwks: 0, devvit: 0, redirects: 0},
+    },
+    {
+      name: 'JWKS redirect',
+      options: {jwks: 'redirect'},
+      status: 401,
+      counters: {discovery: 1, jwks: 1, devvit: 0, redirects: 0},
+    },
+    {
+      name: 'Devvit redirect',
+      options: {devvit: 'redirect'},
+      status: 502,
+      counters: {discovery: 1, jwks: 1, devvit: 1, redirects: 0},
+    },
+  ]
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async t => {
+      const counters = {discovery: 0, jwks: 0, devvit: 0, redirects: 0}
+      const mf = await createWorker(t, {
+        bindings: config,
+        outboundService: mockOutbound(counters, scenario.options),
+      })
+      const token = scenario.foreignSignature
+        ? await sign({}, {key: otherKey})
+        : await sign()
+      const response = await post(mf, token, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'ping',
+      })
+      assert.equal(response.status, scenario.status)
+      const text = await response.text()
+      assert.doesNotMatch(text, new RegExp(MANAGED_TOKEN))
+      assert.doesNotMatch(text, /private|redirect target|followed/i)
+      if (scenario.status === 401) {
+        assert.deepEqual(JSON.parse(text), {error: 'Authentication required'})
+        assert.match(
+          response.headers.get('www-authenticate') ?? '',
+          /oauth-protected-resource/,
+        )
+      } else
+        assert.deepEqual(JSON.parse(text), {
+          error:
+            'Devvit unavailable or configuration rejected. A publication may be uncertain; retry only with the same requestId.',
+        })
+      assert.deepEqual(counters, scenario.counters)
+    })
+  }
+})
+
+test('Worker maps upstream rate limits and passes through accepted empty responses', async t => {
+  const counters = {discovery: 0, jwks: 0, devvit: 0, redirects: 0}
+  const mf = await createWorker(t, {
+    bindings: config,
+    outboundService: mockOutbound(counters, {
+      devvit: ['rate-limit', 'accepted', 'no-content'],
+    }),
+  })
+  const owner = await sign()
+
+  const limited = await post(mf, owner, {
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'ping',
+  })
+  assert.equal(limited.status, 429)
+  assert.equal(limited.headers.get('retry-after'), '17')
+  const limitedText = await limited.text()
+  assert.match(limitedText, /Devvit rate limited/)
+  assert.doesNotMatch(limitedText, /private|upstream/i)
+
+  const accepted = await post(mf, owner, {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'ping',
+  })
+  assert.equal(accepted.status, 202)
+  assert.equal(await accepted.text(), '')
+
+  const noContent = await post(mf, owner, {
+    jsonrpc: '2.0',
+    id: 3,
+    method: 'ping',
+  })
+  assert.equal(noContent.status, 204)
+  assert.equal(await noContent.text(), '')
+
+  assert.deepEqual(counters, {
+    discovery: 1,
+    jwks: 1,
+    devvit: 3,
+    redirects: 0,
+  })
+})
+
+test('five concurrent cold requests authenticate and reload a rotated JWKS after cooldown', {
+  timeout: 60_000,
+}, async t => {
+  const counters = {discovery: 0, jwks: 0, devvit: 0, redirects: 0}
+  // This rotation key is local to this test, not the shared signing keys.
+  const rotated = await generateKeyPair('RS256')
+  let activeJwk = jwk
+  const mf = await createWorker(t, {
+    bindings: config,
+    outboundService: mockOutbound(counters, {
+      keys: () => [activeJwk],
+      // Keep every JWKS response in flight long enough for all concurrent
+      // requests to reach their own jose resolver call.
+      jwksDelayMs: () => 150,
+    }),
+  })
+
+  const owner = await sign()
+  const cold = await Promise.all(
+    Array.from({length: 5}, (_, index) =>
+      post(mf, owner, {jsonrpc: '2.0', id: index + 1, method: 'ping'}),
+    ),
+  )
+  for (const response of cold) {
+    assert.equal(response.status, 200)
+    const body = await response.text()
+    assert.match(body, /"jsonrpc":"2.0"/)
+    assert.doesNotMatch(body, /"error"/)
+  }
+  assert.equal(managedAuthorization, `Bearer ${MANAGED_TOKEN}`)
+  assert.equal(counters.discovery, 5)
+  assert.equal(counters.jwks, 5)
+  assert.equal(counters.devvit, 5)
+
+  const jwksBeforeRotation = counters.jwks
+  // jose's remote JWKS cooldown is fixed at 30 seconds in production.
+  await new Promise(resolve => setTimeout(resolve, 31_000))
+  activeJwk = {
+    ...(await exportJWK(rotated.publicKey)),
+    kid: 'rotated-key',
+    alg: 'RS256',
+    use: 'sig',
+  }
+  const rotatedOwner = await sign(
+    {},
+    {key: rotated.privateKey, kid: 'rotated-key'},
+  )
+  const refreshed = await Promise.all(
+    Array.from({length: 5}, (_, index) =>
+      post(mf, rotatedOwner, {
+        jsonrpc: '2.0',
+        id: index + 10,
+        method: 'ping',
+      }),
+    ),
+  )
+  for (const response of refreshed) {
+    assert.equal(response.status, 200)
+    const body = await response.text()
+    assert.match(body, /"jsonrpc":"2.0"/)
+    assert.doesNotMatch(body, /"error"/)
+  }
+  assert.equal(managedAuthorization, `Bearer ${MANAGED_TOKEN}`)
+  // The verifier itself is cached: rotation must not redo discovery.
+  assert.equal(counters.discovery, 5)
+  // jose 6.2.13 clears pending JWKS work per request on Cloudflare Workers,
+  // so each of the five concurrent unknown-kid requests reloads once.
+  assert.equal(counters.jwks - jwksBeforeRotation, 5)
+  assert.equal(counters.jwks, 10)
+  assert.equal(counters.devvit, 10)
+  assert.equal(counters.redirects, 0)
 })

@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict'
 import {test} from 'node:test'
 import {exportJWK, generateKeyPair, SignJWT} from 'jose'
-import {lazyTokenVerifier, verifyAccessToken} from './auth.ts'
+import {lazyTokenVerifier, tokenVerifier, verifyAccessToken} from './auth.ts'
 import {configSchema} from './config.ts'
 
-test('JWT signature, issuer, resource audience, expiry and not-before are enforced', async () => {
-  const config = configSchema.parse({
+const DISCOVERY = 'https://auth.example/.well-known/openid-configuration'
+const JWKS = 'https://auth.example/jwks'
+
+function makeConfig() {
+  return configSchema.parse({
     PUBLIC_URL: 'https://glyph.example',
     OAUTH_ISSUER: 'https://auth.example/',
     OAUTH_SUBJECT: 'owner',
@@ -13,6 +16,10 @@ test('JWT signature, issuer, resource audience, expiry and not-before are enforc
       'https://glyphwanders-abc123-external.devvit.net/external/mcp',
     DEVVIT_TOKEN: `devvit_at_${'x'.repeat(40)}`,
   })
+}
+
+test('JWT signature, issuer, resource audience, expiry and not-before are enforced', async () => {
+  const config = makeConfig()
   const {privateKey, publicKey} = await generateKeyPair('RS256')
   const sign = (changes: Record<string, unknown> = {}) =>
     new SignJWT({
@@ -57,14 +64,7 @@ test('JWT signature, issuer, resource audience, expiry and not-before are enforc
 })
 
 test('lazy verifier discovers inside requests, caches only completed verifiers with a TTL', async () => {
-  const config = configSchema.parse({
-    PUBLIC_URL: 'https://glyph.example',
-    OAUTH_ISSUER: 'https://auth.example/',
-    OAUTH_SUBJECT: 'owner',
-    DEVVIT_MCP_URL:
-      'https://glyphwanders-abc123-external.devvit.net/external/mcp',
-    DEVVIT_TOKEN: `devvit_at_${'x'.repeat(40)}`,
-  })
+  const config = makeConfig()
   const {privateKey, publicKey} = await generateKeyPair('RS256')
   const jwk = {
     ...(await exportJWK(publicKey)),
@@ -129,4 +129,93 @@ test('lazy verifier discovers inside requests, caches only completed verifiers w
   await verify(token)
   assert.equal(discoveries, 3)
   assert.equal(jwksFetches, 3)
+})
+
+test('malformed compact tokens are rejected before discovery', async () => {
+  const config = makeConfig()
+  let discoveries = 0
+  const upstream: typeof fetch = async () => {
+    discoveries++
+    throw new Error('discovery must not run for a malformed token')
+  }
+  const verify = lazyTokenVerifier(config, upstream)
+  for (const token of ['not-a-jwt', 'a.b', 'a.b.c.d', 'Bearer token'])
+    await assert.rejects(() => verify(token), /Invalid access token/)
+  assert.equal(discoveries, 0)
+})
+
+test('discovery rejects issuer mismatch, insecure JWKS, and upstream failure before JWKS use', async () => {
+  const config = makeConfig()
+  const {privateKey, publicKey} = await generateKeyPair('RS256')
+  const jwk = {
+    ...(await exportJWK(publicKey)),
+    kid: 'adversarial-key',
+    alg: 'RS256',
+    use: 'sig',
+  }
+  const token = await new SignJWT({
+    sub: 'owner',
+    scope: 'glyph:read',
+    exp: Math.floor(Date.now() / 1000) + 300,
+  })
+    .setProtectedHeader({alg: 'RS256', kid: 'adversarial-key'})
+    .setIssuer(config.OAUTH_ISSUER)
+    .setAudience('https://glyph.example/mcp')
+    .sign(privateKey)
+  const scenarios = [
+    {
+      name: 'issuer mismatch',
+      respond: () =>
+        Response.json({
+          issuer: 'https://evil.example/',
+          jwks_uri: JWKS,
+        }),
+      error: /Invalid OAuth metadata/,
+    },
+    {
+      name: 'non-https JWKS',
+      respond: () =>
+        Response.json({
+          issuer: config.OAUTH_ISSUER,
+          jwks_uri: 'http://auth.example/jwks',
+        }),
+      error: /Invalid OAuth metadata/,
+    },
+    {
+      name: 'discovery failure response',
+      respond: () => new Response('private discovery failure', {status: 503}),
+      error: /OAuth discovery failed/,
+    },
+    {
+      name: 'discovery transport failure',
+      respond: () => {
+        throw new Error('private transport failure')
+      },
+      error: /private transport failure/,
+    },
+  ]
+
+  for (const scenario of scenarios) {
+    let discoveries = 0
+    let jwksFetches = 0
+    const upstream: typeof fetch = async (input, init) => {
+      const url = String(input)
+      assert.equal(init?.redirect, 'error')
+      if (url === DISCOVERY) {
+        discoveries++
+        return scenario.respond()
+      }
+      if (url === JWKS) {
+        jwksFetches++
+        return Response.json({keys: [jwk]})
+      }
+      throw new Error(`Unexpected discovery request: ${url}`)
+    }
+    await assert.rejects(
+      async () => (await tokenVerifier(config, upstream))(token),
+      scenario.error,
+    )
+    assert.equal(discoveries, 1, scenario.name)
+    assert.equal(jwksFetches, 0, scenario.name)
+  }
 })
