@@ -60,9 +60,11 @@ export async function tokenVerifier(
 
 /**
  * Worker-only verifier: no network at module initialization. Discovery and
- * JWKS fetch happen inside requests. Only completed verifiers are cached, so
- * concurrent requests never share a pending network promise. Each verifier is
- * bound to one config; a changed issuer, audience or subject gets a new one.
+ * JWKS fetch happen inside requests. Pending discovery promises are not shared.
+ * Cached verifiers contain jose's remote JWKS resolver; cross-request refresh
+ * safety relies on the pinned jose version's Cloudflare Workers handling and
+ * is regression-tested in workerd. The Worker recreates this closure when its
+ * config key changes; this function alone does not detect config changes.
  */
 export function lazyTokenVerifier(
   config: Config,
@@ -71,6 +73,10 @@ export function lazyTokenVerifier(
 ) {
   let cached: {expiresAt: number; verify: (token: string) => Promise<Identity>}
   return async (token: string) => {
+    // Reject malformed compact JWTs before spending an IdP discovery request.
+    // This is only a cheap shape check; jose performs all actual verification.
+    if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token))
+      throw new Error('Invalid access token')
     if (!cached || cached.expiresAt <= Date.now()) {
       const verify = await tokenVerifier(config, upstream)
       cached = {expiresAt: Date.now() + ttlMs, verify}

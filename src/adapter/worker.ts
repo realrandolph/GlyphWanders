@@ -46,27 +46,35 @@ function configKey(config: Config) {
 const edgeFetch: typeof fetch = async (input, init) => {
   if (init?.redirect !== 'error') return fetch(input, init)
   const response = await fetch(input, {...init, redirect: 'manual'})
-  if (response.status >= 300 && response.status < 400)
+  if (response.status >= 300 && response.status < 400) {
+    await response.body?.cancel()
     throw new Error('Redirect denied')
+  }
   return response
 }
 
-/** The Node HTTP server is constructed once per isolate and reused. */
+/** One Node HTTP server is reused per isolate/configuration. */
 function adapterPort(config: Config) {
   const key = configKey(config)
   if (cached?.key === key) return cached.port
-  cached?.server.close()
+  const previous = cached
   cached = undefined
+  previous?.server.close()
   // createAdapter's 120/min limit is per-isolate best effort, not global.
   const server = createServer(
     createAdapter(config, lazyTokenVerifier(config, edgeFetch), edgeFetch),
   )
-  server.listen(0)
-  const address = server.address()
-  if (!address || typeof address === 'string')
-    throw new Error('Node HTTP server did not bind')
-  cached = {key, server, port: address.port}
-  return address.port
+  try {
+    server.listen(0)
+    const address = server.address()
+    if (!address || typeof address === 'string')
+      throw new Error('Node HTTP server did not bind')
+    cached = {key, server, port: address.port}
+    return address.port
+  } catch (error) {
+    server.close()
+    throw error
+  }
 }
 
 function invalidFields(error: {issues: {path: PropertyKey[]}[]}) {
