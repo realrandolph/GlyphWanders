@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import {randomUUID} from 'node:crypto'
-import {mkdtempSync, rmSync} from 'node:fs'
+import {existsSync, mkdtempSync, rmSync} from 'node:fs'
+import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {test} from 'node:test'
 import {Store} from './store.ts'
@@ -86,7 +87,9 @@ test('read leases recover, queued jobs expire and failed writes trigger cooldown
 })
 
 test('persistent SQLite, concurrent connections, scratch CAS and deletion tombstones', () => {
-  const dir = mkdtempSync('/tmp/opencode/glyph-')
+  const dir = mkdtempSync(
+    join(existsSync('/tmp/opencode') ? '/tmp/opencode' : tmpdir(), 'glyph-'),
+  )
   const path = join(dir, 'test.sqlite')
   const a = new Store(path)
   const b = new Store(path)
