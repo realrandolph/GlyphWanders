@@ -94,7 +94,7 @@ npm test                       # includes the real local Workers runtime and dry
 npm run worker:deploy          # deploys glyphwanders to workers.dev
 ```
 
-`wrangler.jsonc` sets the Worker name, runtime compatibility date, `workers_dev: true`, disables preview URLs and persistent request logs, and preserves dashboard text variables with `keep_vars: true`. It contains **no credentials or placeholder production configuration**. With multiple accounts, explicitly set `CLOUDFLARE_ACCOUNT_ID` for Wrangler to select the intended account. If Cloudflare requires initial registration of your account's workers.dev subdomain, finish that in **Workers & Pages** before retrying; a custom domain is not required.
+`wrangler.jsonc` sets the Worker name, runtime compatibility date, `workers_dev: true`, disables preview URLs and persistent request logs, and preserves dashboard text variables with `keep_vars: true`. It contains **no credentials or placeholder production configuration**. With multiple accounts, explicitly set `CLOUDFLARE_ACCOUNT_ID` for Wrangler to select the intended account. If Cloudflare requires initial registration of your account's workers.dev subdomain, complete the Wrangler prompt or register it in **Workers & Pages**; a custom domain, DNS records and certificate setup are not required. The HTTPS URL is publicly reachable. If you change the pinned compatibility date, recheck Node HTTP compatibility and rerun the runtime tests.
 
 An initial deployment **without the Devvit token is intentional**: the Worker must fail closed with HTTP 503 until all required bindings are valid. This is not a working Reddit bridge. Copy the exact URL Wrangler prints, then add the bindings using private interactive prompts:
 
@@ -107,7 +107,7 @@ npx wrangler secret put DEVVIT_TOKEN
 npx wrangler secret list        # names only, never values
 ```
 
-Using secrets for all five values is supported and keeps configuration out of Git. **Do not put token values in command arguments, Wrangler `vars`, commits, chat, or logs.** `DEVVIT_TOKEN` comes from the app's Developer Settings → managed App Token after Reddit grants external endpoint access. If you do not have it yet, leave it absent; do not enter a fake token. The other four values come from the Worker URL, your IdP configuration below, the owner's immutable identity and the actual Reddit installation URL. `wrangler secret put` creates and immediately deploys a new Worker version; no subsequent code deployment is needed just to activate that secret.
+Using secrets for all five values is supported and keeps configuration out of Git. **Do not put token values in command arguments, Wrangler `vars`, commits, chat, or logs.** `DEVVIT_TOKEN` comes from the app's Developer Settings → managed App Token after Reddit grants external endpoint access. If you do not have it yet, leave it absent; do not enter a fake token. The other four values come from the Worker URL, your IdP configuration below, the owner's immutable identity and the actual Reddit installation URL. After the initial code deployment, each `wrangler secret put` creates and immediately deploys a new Worker version with that binding change. It does not upload uncommitted/local source edits; deploy code changes separately.
 
 ### Configure through Cloudflare's web dashboard
 
@@ -125,14 +125,14 @@ CLI and dashboard are alternatives, not two required setup passes. Secrets are r
 curl -i https://glyphwanders.YOUR-SUBDOMAIN.workers.dev/health
 curl -i -X POST https://glyphwanders.YOUR-SUBDOMAIN.workers.dev/mcp
 npm run worker:build           # dry run, no account changes or deployment
-npm run worker:deploy          # deploy reviewed updates; preserves bindings
+npm run worker:deploy          # preserves secrets and dashboard text vars via keep_vars
 npx wrangler deployments list
 npx wrangler rollback VERSION_ID  # choose a known-good version from deployment history
 ```
 
 Incomplete configuration must return 503 without exposing values or calling Reddit. Once configured, `/health` reports configuration readiness only—not a successful IdP login, Devvit approval or Reddit call. Unauthenticated `POST /mcp` must return 401 with a protected-resource metadata challenge. Verify the metadata resource equals **your Worker origin plus `/mcp`**. Then connect ChatGPT and run the documented read-only smoke test before explicitly authorizing public writes. Health checks never publish.
 
-Rotate the managed token using a new private `wrangler secret put DEVVIT_TOKEN` prompt or dashboard Secret edit/deploy, then revoke the old token at Reddit. Rollback can restore older code **and configuration/secrets from that version**; inspect the selected version and reapply rotations as needed. Do not blindly roll back across a credential revocation. No GitHub deployment token is required: CI tests/builds only and never deploys into your account.
+Rotate the managed token using a new private `wrangler secret put DEVVIT_TOKEN` prompt or dashboard Secret edit/deploy, then revoke the old token at Reddit. Rollback selects a previously published version and creates a new deployment; it does **not** undo changes to connected resources. Only the 100 most recently published versions are eligible. Inspect the selected version and verify bindings after rollback; do not assume a rollback undoes credential rotations or makes revoked credentials usable. No GitHub deployment token is required: CI tests/builds only and never deploys into your account.
 
 ### Local Worker development and free-tier boundaries
 
@@ -143,9 +143,9 @@ npm run worker:dev             # local Workers runtime, not a public deployment
 
 An absent/invalid local config gives the same safe unconfigured responses. Tests use mocked IdP/Devvit endpoints, never a real Reddit token. `.dev.vars` is for local use and is **not uploaded automatically**; do not confuse it with deployed Worker bindings. If `.dev.vars` exists, Wrangler ignores `.env` for local bindings. Keep development/test credentials separate from production, and remember that local mode with real credentials can still make live outbound requests.
 
-Cloudflare currently documents **100,000 requests/day, 10 ms CPU/request and 50 subrequests/request** on Workers Free. A visit entails multiple MCP calls; two visits/day is low traffic, but JWT verification, cold initialization and JSON parsing still need to fit the per-request CPU limit. Network waiting does not count as CPU time. Inspect Worker **Metrics** for errors/CPU after linking; a live authenticated free-tier workload has not been verified just by deploying an unconfigured Worker. This setup provisions no paid storage or scheduled Worker resources and does not upgrade your plan. The OAuth provider has its own pricing/limits. The adapter's 120-request/minute limiter is only best-effort **per isolate**, not an account-wide security or billing limit; Reddit's persistent cooldown remains in Devvit Redis.
+Cloudflare currently documents **100,000 requests/day (account-wide), 10 ms CPU/request and 50 subrequests/request** on Workers Free. A visit entails multiple MCP calls; two visits/day is low traffic, but request-time discovery processing, JWT verification and JSON parsing still need to fit the per-request CPU limit, which cannot be raised on Free. Worker startup has a separate one-second limit. Network waiting does not count as CPU time. Inspect Worker **Metrics** for errors/CPU after linking; a live authenticated free-tier workload has not been verified just by deploying an unconfigured Worker. This setup provisions no paid storage or scheduled Worker resources and does not upgrade your plan. The OAuth provider has its own pricing/limits. The adapter's 120-request/minute limiter is only best-effort **per isolate**, not an account-wide security or billing limit; Reddit's persistent cooldown remains in Devvit Redis.
 
-Sources: [Cloudflare Node HTTP compatibility](https://developers.cloudflare.com/workers/runtime-apis/nodejs/http/), [secrets via CLI/dashboard](https://developers.cloudflare.com/workers/configuration/secrets/), [Worker limits](https://developers.cloudflare.com/workers/platform/limits/).
+Sources: [Cloudflare Node HTTP compatibility](https://developers.cloudflare.com/workers/runtime-apis/nodejs/http/), [secrets via CLI/dashboard](https://developers.cloudflare.com/workers/configuration/secrets/), [workers.dev](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/), [rollbacks](https://developers.cloudflare.com/workers/configuration/versions-and-deployments/rollbacks/), [Worker limits](https://developers.cloudflare.com/workers/platform/limits/).
 
 Use an established OAuth 2.1 provider (e.g. Auth0), not a custom password/token server. The adapter validates JWT signatures using OIDC discovery/JWKS, exact issuer/audience, expiration/not-before, immutable owner subject and tool scopes. Its OAuth audience/resource is **`${PUBLIC_URL}/mcp`**. Access JWTs must use RS256 or ES256; opaque/encrypted tokens are unsupported.
 
