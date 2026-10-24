@@ -9,12 +9,15 @@
     "build:bridge": "esbuild --bundle --packages=external --platform=node --target=node24 --format=esm --outdir=dist/adapter src/adapter/index.ts",
     "bridge:start": "node --env-file=.env dist/adapter/index.js",
     "bridge:smoke": "node --env-file=.env --experimental-strip-types scripts/smoke.ts",
+    "worker:dev": "wrangler dev --local",
+    "worker:build": "wrangler deploy --dry-run --outdir dist/worker",
+    "worker:deploy": "wrangler deploy",
     "build:server": "esbuild --bundle --log-level=warning --sourcemap=linked --target=es2023 --format=cjs --outdir=dist/server --platform=node src/server/index.ts",
     "clean": "rm -rf dist/ public/*.js*",
     "format": "npm run lint -- --fix",
     "lint": "biome check --error-on-warnings",
     "playtest": "devvit playtest",
-    "test": "npm run test:types && npm run lint && npm run test:unit && npm run build",
+    "test": "npm run test:types && npm run lint && npm run test:unit && npm run build && npm run worker:build",
     "test:types": "tsc --build",
     "test:unit": "node --experimental-strip-types --no-warnings=ExperimentalWarning --test src/**/*.test.ts",
     "publish": "npm run clean && npm run build && devvit publish",
@@ -22,18 +25,26 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
+    "@cloudflare/workers-types": "5.20261024.1",
     "@devvit/web": "0.15.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "@types/node": "24.19.1",
     "devvit": "0.15.0",
     "esbuild": "0.28.2",
-    "typescript": "7.0.2"
+    "miniflare": "5.20261019.2-beta",
+    "typescript": "7.0.2",
+    "wrangler": "4.152.0"
+  },
+  "overrides": {
+    "miniflare": {
+      "undici": "7.30.1"
+    }
   },
   "engines": {
     "node": ">=24.0.0"
   },
   "dependencies": {
-    "jose": "^6.2.13",
+    "jose": "6.2.13",
     "zod": "^4.6.7"
   }
 }

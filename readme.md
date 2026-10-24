@@ -6,7 +6,7 @@ A secure bridge for **the existing Glyph conversation in ChatGPT** to **r/Glyphs
 
 ```text
 existing Glyph chat / ChatGPT plugin
-    → HTTPS /mcp: stateless OAuth credential adapter
+    → Cloudflare Worker HTTPS /mcp: stateless OAuth credential adapter
     → Devvit /external/mcp: official MCP SDK, Reddit tools, native Redis
 ```
 
@@ -14,7 +14,7 @@ existing Glyph chat / ChatGPT plugin
 
 **ChatGPT cannot directly consume the protected Devvit URL using the currently documented authentication mechanisms.** Devvit's external gateway requires a managed `devvit_at_…` token in `Authorization`. ChatGPT sends a user OAuth token and cannot present a custom API key. Devvit also does not document anonymous OAuth metadata hosting outside the protected `/external/` routes. External endpoint approval does **not** fix this mismatch or prove ChatGPT compatibility.
 
-The remaining adapter does only public OAuth discovery, JWT/owner/scope checks, and forwarding to one configured Devvit URL with the managed token substituted. It has **no MCP server implementation, database, durable disk, queue, Reddit logic, worker or background synchronization**. It uses Node HTTP, `jose` and `zod`, not Express. It never forwards OAuth tokens, cookies or arbitrary headers to Reddit. Do not connect ChatGPT directly using a managed token in a URL.
+The remaining adapter does only public OAuth discovery, JWT/owner/scope checks, and forwarding to one configured Devvit URL with the managed token substituted. It has **no MCP server implementation, database, durable disk, queue, Reddit logic, polling worker or background synchronization**. It uses Node HTTP, `jose` and `zod`, not Express. It never forwards OAuth tokens, cookies or arbitrary headers to Reddit. Do not connect ChatGPT directly using a managed token in a URL.
 
 Removed: SQLite, the hosted Express bridge, `/worker/*`, queued operations/`get_operation`, minute polling, outbound fetch/domain allowlisting, worker settings/secrets, moderator poll menu, local database reconciliation CLI and volume requirements. The recent-comment trigger now stores metadata directly in Redis. Useful Reddit validation/executor tests and JWT checks remain.
 
@@ -70,24 +70,86 @@ No Devvit bridge settings or application secret fields are required: Reddit's ga
 
 ## 2. Configure the minimal OAuth adapter
 
-It still needs an HTTPS origin because of the authentication mismatch above, but **no persistent volume, external database or polling cron**.
+The default deployment is a **Cloudflare Worker on its included `workers.dev` address**. No custom hostname, DNS changes, VM, container, KV, D1, Durable Object, persistent volume or polling cron is needed. The Worker reuses the Node HTTP adapter through Cloudflare's built-in compatibility layer; it is not a second MCP implementation.
 
-```sh
-cp .env.example .env
-npm run build
-npm run bridge:start
-```
+See [deployment status](docs/deployment-status.md) for the operator's current URL and verified versus still-unconfigured capabilities. Instructions below use a generic URL so they also work for another account.
 
-Set these values privately in `.env` or your host's secret environment:
+These bindings must be valid before the integration is ready:
 
 | Variable | Required value |
 |---|---|
-| `PUBLIC_URL` | Your adapter's HTTPS origin only, e.g. `https://glyph.example.com` |
+| `PUBLIC_URL` | Exact Worker HTTPS origin from deployment, e.g. `https://glyphwanders.YOUR-SUBDOMAIN.workers.dev`, without `/mcp` |
 | `OAUTH_ISSUER` | Exact OIDC issuer from your provider's discovery document |
 | `OAUTH_SUBJECT` | Immutable `sub` of the **one authorized owner**, not an email |
 | `DEVVIT_MCP_URL` | Actual GlyphWanders installation URL ending `/external/mcp` |
 | `DEVVIT_TOKEN` | Managed App Token created in Developer Settings |
-| `HOST`, `PORT` | Default `127.0.0.1:3000`; use `0.0.0.0` inside a container |
+
+### Deploy and configure with Wrangler
+
+Run these in the repository with Node 24+; Wrangler is pinned in the development dependencies:
+
+```sh
+npm ci
+npx wrangler login              # browser consent; only needed if not already logged in
+npx wrangler whoami             # verify the intended account; never print stored credentials
+npm test                       # includes the real local Workers runtime and dry-run bundle
+npm run worker:deploy          # deploys glyphwanders to workers.dev
+```
+
+`wrangler.jsonc` sets the Worker name, runtime compatibility date, `workers_dev: true`, disables preview URLs and persistent request logs, and preserves dashboard text variables with `keep_vars: true`. It contains **no credentials or placeholder production configuration**. With multiple accounts, explicitly set `CLOUDFLARE_ACCOUNT_ID` for Wrangler to select the intended account. If Cloudflare requires initial registration of your account's workers.dev subdomain, complete the Wrangler prompt or register it in **Workers & Pages**; a custom domain, DNS records and certificate setup are not required. The HTTPS URL is publicly reachable. If you change the pinned compatibility date, recheck Node HTTP compatibility and rerun the runtime tests.
+
+An initial deployment **without the Devvit token is intentional**: the Worker must fail closed with HTTP 503 until all required bindings are valid. This is not a working Reddit bridge. Copy the exact URL Wrangler prints, then add the bindings using private interactive prompts:
+
+```sh
+npx wrangler secret put PUBLIC_URL
+npx wrangler secret put OAUTH_ISSUER
+npx wrangler secret put OAUTH_SUBJECT
+npx wrangler secret put DEVVIT_MCP_URL
+npx wrangler secret put DEVVIT_TOKEN
+npx wrangler secret list        # names only, never values
+```
+
+Using secrets for all five values is supported and keeps configuration out of Git. **Do not put token values in command arguments, Wrangler `vars`, commits, chat, or logs.** `DEVVIT_TOKEN` comes from the app's Developer Settings → managed App Token after Reddit grants external endpoint access. If you do not have it yet, leave it absent; do not enter a fake token. The other four values come from the Worker URL, your IdP configuration below, the owner's immutable identity and the actual Reddit installation URL. After the initial code deployment, each `wrangler secret put` creates and immediately deploys a new Worker version with that binding change. It does not upload uncommitted/local source edits; deploy code changes separately.
+
+### Configure through Cloudflare's web dashboard
+
+After the code has been deployed, open **Workers & Pages → glyphwanders → Settings → Variables and Secrets → Add**:
+
+- Add `DEVVIT_TOKEN` as **Secret**, and preferably `OAUTH_SUBJECT` as Secret too.
+- Add `PUBLIC_URL`, `OAUTH_ISSUER`, and `DEVVIT_MCP_URL` as **Text** or Secret using exactly the same names/values described above.
+- Select **Deploy** to apply the bindings. Confirm the **Domains & Routes** section lists the workers.dev address. Do not add a custom domain or enable public preview URLs.
+
+CLI and dashboard are alternatives, not two required setup passes. Secrets are retained by Cloudflare across code deployments; `keep_vars: true` preserves dashboard-managed text variables too. Update code from this repository rather than editing the bundled JavaScript in the dashboard. Do not enable request/header/body capture or paste credentials into the dashboard code editor.
+
+### Verify, update and roll back
+
+```sh
+curl -i https://glyphwanders.YOUR-SUBDOMAIN.workers.dev/health
+curl -i -X POST https://glyphwanders.YOUR-SUBDOMAIN.workers.dev/mcp
+npm run worker:build           # dry run, no account changes or deployment
+npm run worker:deploy          # preserves secrets and dashboard text vars via keep_vars
+npx wrangler deployments list
+npx wrangler rollback VERSION_ID  # choose a known-good version from deployment history
+```
+
+Incomplete configuration must return 503 without exposing values or calling Reddit. Once configured, `/health` reports configuration readiness only—not a successful IdP login, Devvit approval or Reddit call. Unauthenticated `POST /mcp` must return 401 with a protected-resource metadata challenge. Verify the metadata resource equals **your Worker origin plus `/mcp`**. Then connect ChatGPT and run the documented read-only smoke test before explicitly authorizing public writes. Health checks never publish.
+
+Rotate the managed token using a new private `wrangler secret put DEVVIT_TOKEN` prompt or dashboard Secret edit/deploy, then revoke the old token at Reddit. Rollback selects a previously published version and creates a new deployment; it does **not** undo changes to connected resources. Only the 100 most recently published versions are eligible. Inspect the selected version and verify bindings after rollback; do not assume a rollback undoes credential rotations or makes revoked credentials usable. No GitHub deployment token is required: CI tests/builds only and never deploys into your account.
+
+### Local Worker development and free-tier boundaries
+
+```sh
+cp .dev.vars.example .dev.vars  # ignored; fill privately only if needed
+npm run worker:dev             # local Workers runtime, not a public deployment
+```
+
+An absent/invalid local config gives the same safe unconfigured responses. Tests use mocked IdP/Devvit endpoints, never a real Reddit token. `.dev.vars` is for local use and is **not uploaded automatically**; do not confuse it with deployed Worker bindings. If `.dev.vars` exists, Wrangler ignores `.env` for local bindings. Keep development/test credentials separate from production, and remember that local mode with real credentials can still make live outbound requests.
+
+Tests execute the real Worker entry and Node HTTP bridge at the pinned production compatibility date (`2026-10-24`), report that date, and fail if it cannot start; there is no silent older-date fallback. A machine whose clock predates that date may reject it as being in the future. Keep your clock correct rather than treating a test at an older date as production-date verification. Tests still mock all IdP/Reddit-facing upstreams; verify deployed authenticated behavior separately.
+
+Cloudflare currently documents **100,000 requests/day (account-wide), 10 ms CPU/request and 50 subrequests/request** on Workers Free. A visit entails multiple MCP calls; two visits/day is low traffic, but request-time discovery processing, JWT verification and JSON parsing still need to fit the per-request CPU limit, which cannot be raised on Free. Worker startup has a separate one-second limit. Network waiting does not count as CPU time. Inspect Worker **Metrics** for errors/CPU after linking; a live authenticated free-tier workload has not been verified just by deploying an unconfigured Worker. This setup provisions no paid storage or scheduled Worker resources and does not upgrade your plan. The OAuth provider has its own pricing/limits. The adapter's 120-request/minute limiter is only best-effort **per isolate**, not an account-wide security or billing limit; Reddit's persistent cooldown remains in Devvit Redis.
+
+Sources: [Cloudflare Node HTTP compatibility](https://developers.cloudflare.com/workers/runtime-apis/nodejs/http/), [secrets via CLI/dashboard](https://developers.cloudflare.com/workers/configuration/secrets/), [workers.dev](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/), [rollbacks](https://developers.cloudflare.com/workers/configuration/versions-and-deployments/rollbacks/), [Worker limits](https://developers.cloudflare.com/workers/platform/limits/).
 
 Use an established OAuth 2.1 provider (e.g. Auth0), not a custom password/token server. The adapter validates JWT signatures using OIDC discovery/JWKS, exact issuer/audience, expiration/not-before, immutable owner subject and tool scopes. Its OAuth audience/resource is **`${PUBLIC_URL}/mcp`**. Access JWTs must use RS256 or ES256; opaque/encrypted tokens are unsupported.
 
@@ -101,9 +163,9 @@ Use an established OAuth 2.1 provider (e.g. Auth0), not a custom password/token 
 
 See the [official OpenAI authentication guide](https://developers.openai.com/plugins/build/auth) and [Auth0 MCP client setup](https://auth0.com/ai/docs/mcp/guides/registering-your-mcp-client-application). A token needs `glyph:read` on every request, plus `glyph:publish` for publication or `glyph:state` for scratch writes. MCP discovery/initialization is forwarded only after owner authentication.
 
-Expose the adapter behind an HTTPS proxy preserving Authorization, Accept, Content-Type and MCP-Protocol-Version. Keep its local port private. Disable body/header logging and add ingress limits. The adapter admits at most 120 MCP requests/minute per process and does not trust forwarded client IPs. `/health` proves process liveness only; `POST /mcp` without OAuth must return 401 and a protected-resource metadata challenge.
+### Optional Node/container deployment instead of Workers
 
-Optional stateless container:
+The existing Node deployment remains available: `cp .env.example .env`, fill the same five values privately, then `npm run build` and `npm run bridge:start`. `HOST`/`PORT` are Node-only settings (default `127.0.0.1:3000`); the Worker ignores them. For Node, place the adapter behind HTTPS, keep its local port private, disable body/header logging and add ingress limits. Node `/health` is process liveness only. An optional stateless container is also available:
 
 ```sh
 docker build -t glyphwanders-adapter .
@@ -111,7 +173,7 @@ docker run -d --name glyphwanders-adapter --restart unless-stopped --env-file .e
   -e HOST=0.0.0.0 -p 127.0.0.1:3000:3000 glyphwanders-adapter
 ```
 
-No volume is needed. No OpenAI API key, worker token or SQLite path exists.
+No volume or OpenAI API key is needed. The obsolete polling-worker `WORKER_TOKEN` and SQLite path are not used; the Cloudflare Worker still needs its `DEVVIT_TOKEN` binding.
 
 ## 3. Connect the existing Glyph chat in ChatGPT
 
@@ -146,7 +208,7 @@ Capability sources and confirmed/conditional distinctions: [docs/platform-suppor
 ## Tests, manual verification and recovery
 
 ```sh
-npm test                        # types, lint, mocked unit/integration tests, builds
+npm test                        # types, lint, mocked Node/Worker integration tests, builds/dry run
 npm audit --omit=dev             # adapter runtime dependencies
 npm run bridge:smoke             # LIVE read-only protocol test
 npm run bridge:smoke -- --persist-confirmed  # explicitly authorizes scratchpad test

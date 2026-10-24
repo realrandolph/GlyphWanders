@@ -1,0 +1,12 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "glyphwanders",
+  "main": "src/adapter/worker.ts",
+  "compatibility_date": "2026-10-24",
+  "workers_dev": true,
+  "preview_urls": false,
+  "keep_vars": true,
+  "minify": true,
+  "send_metrics": false,
+  "observability": {"enabled": false}
+}

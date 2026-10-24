@@ -2,6 +2,7 @@
   // Only build references.
   "files": [],
   "references": [
+    {"path": "./tsconfig.worker.json"},
     {"path": "./scripts/"},
     {"path": "./src/adapter/"},
     {"path": "./src/server/"},
