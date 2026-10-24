@@ -5,5 +5,5 @@ import {onReq} from './server.ts'
 const server = createServer(onReq)
 const port: number = getServerPort()
 
-server.on('error', err => console.error(`server error; ${err.stack}`))
+server.on('error', err => console.error(`server error; ${err.name}`))
 server.listen(port, () => console.log(`http://localhost:${port}`))
