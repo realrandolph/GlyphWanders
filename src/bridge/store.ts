@@ -162,12 +162,34 @@ export class Store {
           'UPDATE jobs SET status=?,result=?,error=?,updated=? WHERE id=?',
         )
         .run(status, JSON.stringify(result ?? null), error ?? null, now, id)
-      if (error)
+      if (error) {
+        const previous = this.db
+          .prepare("SELECT value FROM control WHERE key='failures'")
+          .get() as {value: number} | undefined
+        const failures = Math.min((previous?.value ?? 0) + 1, 7)
+        this.db
+          .prepare(
+            "INSERT INTO control VALUES('failures',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+          )
+          .run(failures)
         this.db
           .prepare(
             "INSERT INTO control VALUES('cooldown',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
           )
-          .run(now + 60_000)
+          .run(now + Math.min(3_600_000, 60_000 * 2 ** (failures - 1)))
+      } else {
+        this.db
+          .prepare(
+            "INSERT INTO control VALUES('failures',0) ON CONFLICT(key) DO UPDATE SET value=0",
+          )
+          .run()
+        if (row.kind === 'activity')
+          this.db
+            .prepare(
+              "INSERT INTO control VALUES('last_activity_read',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            )
+            .run(now)
+      }
       if (!error && row.kind === 'thread') {
         const {postId} = JSON.parse(row.args)
         this.db
@@ -193,11 +215,12 @@ export class Store {
       visits: this.db
         .prepare('SELECT * FROM visits ORDER BY visited DESC LIMIT ?')
         .all(limit),
-      lastActivityRead: this.db
-        .prepare(
-          "SELECT max(updated) AS timestamp FROM jobs WHERE kind='activity' AND status='succeeded'",
-        )
-        .get(),
+      lastActivityRead:
+        this.db
+          .prepare(
+            "SELECT value AS timestamp FROM control WHERE key='last_activity_read'",
+          )
+          .get() ?? null,
     }
   }
   readState() {

@@ -6,8 +6,14 @@ import {
 import {z} from 'zod'
 import {operation, type Store} from './store.ts'
 
-const id = z.string().regex(/^t[13]_[a-z0-9]+$/)
-const postId = z.string().regex(/^t3_[a-z0-9]+$/)
+const id = z
+  .string()
+  .max(32)
+  .regex(/^t[13]_[a-z0-9]+$/)
+const postId = z
+  .string()
+  .max(32)
+  .regex(/^t3_[a-z0-9]+$/)
 const requestId = z
   .string()
   .uuid()
@@ -16,7 +22,7 @@ const requestId = z
   )
 const limit = z.number().int().min(1).max(50).default(20)
 export const schemas = {
-  read_activity: z.object({limit, after: id.optional()}).strict(),
+  read_activity: z.object({limit, after: postId.optional()}).strict(),
   get_thread: z
     .object({
       postId,

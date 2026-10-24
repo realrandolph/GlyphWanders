@@ -17,11 +17,15 @@ const POST_ID_RE = /^t3_[a-z0-9]+$/i
 const COMMENT_ID_RE = /^t1_[a-z0-9]+$/i
 const PARENT_ID_RE = /^t[13]_[a-z0-9]+$/i
 
-const fullname = z.string().regex(FULLNAME_RE, 'expected a Reddit fullname')
-const postId = z.string().regex(POST_ID_RE, 'expected a t3_ post id')
+const fullname = z
+  .string()
+  .max(32)
+  .regex(FULLNAME_RE, 'expected a Reddit fullname')
+const postId = z.string().max(32).regex(POST_ID_RE, 'expected a t3_ post id')
 const commentId = z.string().regex(COMMENT_ID_RE, 'expected a t1_ comment id')
 const parentId = z
   .string()
+  .max(32)
   .regex(PARENT_ID_RE, 'expected a t1_ comment or t3_ post id')
 const requestId = z.string().min(1).max(128)
 
@@ -33,7 +37,7 @@ export const ActivityArgsSchema = z.object({
     .min(1)
     .max(ACTIVITY_MAX_LIMIT)
     .default(ACTIVITY_DEFAULT_LIMIT),
-  after: fullname.optional(),
+  after: postId.optional(),
 })
 
 export const ThreadArgsSchema = z.object({
@@ -126,7 +130,11 @@ export const CommentDataSchema = z.object({
 
 export const CommentEventRequestSchema = z.object({
   subreddit: z.literal(TARGET_SUBREDDIT),
-  comment: CommentDataSchema,
+  comment: CommentDataSchema.pick({
+    id: true,
+    postId: true,
+    createdAt: true,
+  }).strict(),
 })
 
 const activityPage = z.object({

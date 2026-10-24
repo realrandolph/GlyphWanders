@@ -1,7 +1,6 @@
 import {z} from 'zod'
 import {
   type ClaimRequest,
-  type CommentData,
   type CommentEventRequest,
   type CompleteRequest,
   TARGET_SUBREDDIT,
@@ -115,7 +114,7 @@ export function bridgeEndpoint(base: string, route: string): string {
  */
 export async function postCommentEvent(
   config: BridgeConfig,
-  comment: CommentData,
+  comment: CommentEventRequest['comment'],
   fetchImpl?: FetchLike,
 ): Promise<void> {
   const body: CommentEventRequest = {subreddit: TARGET_SUBREDDIT, comment}

@@ -44,11 +44,7 @@ test('captures a comment created on an old post', async () => {
       subreddit: target,
       comment: {
         id: 't1_comment1',
-        parentId: 't3_oldpost',
         postId: 't3_oldpost',
-        author: 'bob',
-        body: 'A comment on an old post',
-        url: 'https://www.reddit.com/r/GlyphsPlayground/comments/oldpost/title/comment1/',
         createdAt: '2026-01-02T04:05:06.000Z',
       },
     },

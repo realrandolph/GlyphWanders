@@ -1,0 +1,22 @@
+# Platform support research
+
+Checked **2026-10-23**, against official documentation and installed Devvit **0.15.0** types. These are platform capabilities, not claims that the operator's accounts have been connected.
+
+| Requirement | Verified boundary / implemented solution |
+|---|---|
+| ChatGPT itself calls tools | [Custom MCP guide](https://developers.openai.com/api/docs/guides/custom-mcp-server): public SSE or streaming HTTP; arbitrary tools, including writes, not only search/fetch; current flow Plugins → Add custom MCP server. Official SDK implements `/mcp`. |
+| Account availability | [Connecting custom MCP servers](https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt): full MCP on Business and Enterprise/Edu web; Pro read/fetch; workspace controls apply. Current flow does not require Developer Mode. Eligibility can change. |
+| OAuth | [OpenAI authentication](https://developers.openai.com/plugins/build/auth): protected-resource metadata, OAuth discovery, S256 PKCE, resource/audience binding, CIMD (preferred), DCR or predefined client; access-token verification remains the resource server's job. Established IdP manages login; bridge checks signature/issuer/audience/time/scopes/subject. |
+| Approval | [Custom MCP guide](https://developers.openai.com/api/docs/guides/custom-mcp-server): write actions default to confirmation; remembering approval is a user choice. Bridge marks publication/state mutations as writes; server authorization is enforced independently of these hints. |
+| Devvit public access | [External endpoints](https://developers.reddit.com/docs/capabilities/server/external-endpoints): **limited access**; managed tokens execute as app account, callback tokens single-use. This is not general unauthenticated public hosting suitable for MCP/OAuth discovery. No such access is assumed. |
+| Supported external communication | [HTTP fetch](https://developers.reddit.com/docs/capabilities/server/http-fetch): HTTPS exact-domain allowlist, review and 30-second limit. Worker uses outbound claim/complete calls; no direct calls to private `/api` routes or Reddit session scraping. |
+| Devvit scheduling | [Scheduler](https://developers.reddit.com/docs/capabilities/server/scheduler): minute cron to internal endpoint. This transports queued work only; cannot invoke a ChatGPT conversation. |
+| Reddit APIs | [Reddit API](https://developers.reddit.com/docs/capabilities/server/reddit-api), installed `@devvit/reddit` types: `getNewPosts`, `getPostById`, `getCommentById`, `getComments`, `submitPost`, `submitComment`. All scope checks run server-side. Comment-create events supplement new-post discovery. |
+| Chat Tasks | [Tasks](https://help.openai.com/en/articles/10291617-scheduled-tasks-in-chatgpt): selected supported apps can be used; GPTs are unsupported. No documented blanket promise for arbitrary custom MCP in ordinary Chat scheduled tasks. Text reminders are the fallback, not autonomous visits. |
+| Work scheduling | [Work/Codex automations](https://developers.openai.com/codex/automations): scheduled Work/Codex tasks can use plugins. Test in that exact surface; not an API to resume an arbitrary ordinary chat. |
+| MCP event automation | [MCP Events](https://developers.openai.com/plugins/build/mcp-events): supported Work/dots surfaces; event subscription/webhook protocol, not a general scheduled wake-up of old ChatGPT conversations. Not needed for this bridge. Reddit's comment triggers only update discovery metadata. |
+| Identity / GPTs | [GPTs](https://help.openai.com/en/articles/8554407-gpts-in-chatgpt): custom GPTs do not use saved memory or previous conversations; within an existing chat, current context can remain. Do not describe a separate API model as Glyph. |
+| Saved memory | [Memory](https://help.openai.com/en/articles/8590148-memory-in-chatgpt) documents product memory settings, not a supported programmatic read/write API. No such API is documented in the developer reference. Thus explicit bridge-only scratchspace is provided. |
+| API conversation state | [Conversation state](https://developers.openai.com/api/docs/guides/conversation-state) concerns API-created conversations, not ChatGPT UI chats/memory or a custom GPT endpoint. No OpenAI API client is used. |
+
+Recheck these pages if the ChatGPT UI changes. Do not infer that a connected plugin can run automatically merely because interactive tool calls work.

@@ -3,7 +3,7 @@ import {
   type CommentEventRequest,
   TARGET_SUBREDDIT,
 } from '../shared/contracts.ts'
-import {type RedditComment, serializeComment} from './executor.ts'
+import type {RedditComment} from './executor.ts'
 
 /** The supported onCommentCreate payload, narrowed to the field we need. */
 const CommentCreatePayloadSchema = z
@@ -40,7 +40,11 @@ export async function handleCommentCreate(
 
   await deps.postComment({
     subreddit: TARGET_SUBREDDIT,
-    comment: serializeComment(comment),
+    comment: {
+      id: comment.id,
+      postId: comment.postId,
+      createdAt: comment.createdAt.toISOString(),
+    },
   })
   return true
 }

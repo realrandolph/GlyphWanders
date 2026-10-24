@@ -1,8 +1,15 @@
 import {z} from 'zod'
 
-const httpsUrl = z
-  .url()
-  .refine(value => new URL(value).protocol === 'https:', 'HTTPS required')
+const httpsUrl = z.url().refine(value => {
+  const url = new URL(value)
+  return (
+    url.protocol === 'https:' &&
+    !url.username &&
+    !url.password &&
+    !url.search &&
+    !url.hash
+  )
+}, 'HTTPS required; credentials, query and fragment forbidden')
 export const configSchema = z.object({
   PUBLIC_URL: httpsUrl.refine(
     value =>

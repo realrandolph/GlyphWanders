@@ -9,7 +9,13 @@ import {
   jwtVerify,
 } from 'jose'
 import {z} from 'zod'
-import {CommentDataSchema} from '../shared/contracts.ts'
+import {
+  ActivityResultSchema,
+  CommentEventRequestSchema,
+  PublishPostResultSchema,
+  ReplyResultSchema,
+  ThreadResultSchema,
+} from '../shared/contracts.ts'
 import type {Config} from './config.ts'
 import type {Store} from './store.ts'
 import {makeServer} from './tools.ts'
@@ -68,6 +74,7 @@ export function createApp(
       limit: 120,
       standardHeaders: 'draft-8',
       legacyHeaders: false,
+      validate: {xForwardedForHeader: false},
     }),
   )
   app.use((_req, res, next) => {
@@ -82,7 +89,6 @@ export function createApp(
       scopes_supported: ['glyph:read', 'glyph:publish', 'glyph:state'],
     }),
   )
-  app.use(express.json({limit: '1mb'}))
   app.use('/worker', (req, res, next) => {
     const expected = Buffer.from(`Bearer ${config.WORKER_TOKEN}`)
     const actual = Buffer.from(req.headers.authorization ?? '')
@@ -95,13 +101,12 @@ export function createApp(
     }
     next()
   })
+  // Large bounded Reddit reads can include many Unicode bodies. Authenticate
+  // the worker before permitting its larger completion payload.
+  app.use('/worker/complete', express.json({limit: '10mb'}))
+  app.use(express.json({limit: '1mb'}))
   const claim = z.object({subreddit: z.literal('GlyphsPlayground')}).strict()
-  const commentEvent = z
-    .object({
-      subreddit: z.literal('GlyphsPlayground'),
-      comment: CommentDataSchema,
-    })
-    .strict()
+  const commentEvent = CommentEventRequestSchema.strict()
   app.post('/worker/comment', (req, res) => {
     const event = commentEvent.safeParse(req.body)
     if (!event.success) {
@@ -127,7 +132,15 @@ export function createApp(
     .object({
       id: z.string().uuid(),
       result: z.unknown().optional(),
-      error: z.string().max(500).optional(),
+      error: z
+        .enum([
+          'rate_limited',
+          'reddit_unavailable',
+          'target_restricted',
+          'invalid_worker_job',
+          'bridge_unavailable',
+        ])
+        .optional(),
     })
     .strict()
   app.post('/worker/complete', (req, res) => {
@@ -137,6 +150,20 @@ export function createApp(
       return
     }
     try {
+      if (!input.data.error) {
+        const kind = store.get(input.data.id).kind
+        const resultSchemas = {
+          activity: ActivityResultSchema,
+          thread: ThreadResultSchema,
+          publish_post: PublishPostResultSchema,
+          reply: ReplyResultSchema,
+        }
+        const schema = resultSchemas[kind as keyof typeof resultSchemas]
+        if (!schema?.safeParse(input.data.result).success) {
+          res.status(400).json({error: 'Invalid operation result'})
+          return
+        }
+      }
       const job = store.complete(
         input.data.id,
         input.data.result,

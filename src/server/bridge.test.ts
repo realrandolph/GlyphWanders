@@ -202,11 +202,7 @@ test('posts one comment event with the bridge contract shape', async () => {
   const {calls, fetchImpl} = recorder(() => response({ok: true}))
   const comment = {
     id: 't1_comment1',
-    parentId: 't3_post1',
     postId: 't3_post1',
-    author: 'bob',
-    body: 'A comment',
-    url: 'https://www.reddit.com/r/GlyphsPlayground/comments/post1/title/comment1/',
     createdAt: '2026-01-02T04:05:06.000Z',
   }
 

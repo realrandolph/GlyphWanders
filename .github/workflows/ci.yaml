@@ -3,9 +3,9 @@ name: CI
 
 on:
   push:
-    branches: ['main']
+    branches: ['master']
   pull_request:
-    branches: ['main']
+    branches: ['master']
 
 jobs:
   test:
@@ -18,13 +18,10 @@ jobs:
         with:
           node-version: 24.18.0
       - name: Install Dependencies
-        run: npm install --no-fund
-      - parallel:
-          - name: Typecheck
-            run: npm run test:types
-          - name: Lint
-            run: npm run lint
-          - name: Unit Test
-            run: npm run test:unit
-          - name: Build
-            run: npm run build
+        run: npm ci --no-fund
+      - name: Test and build
+        run: npm test
+      - name: Audit production dependencies
+        run: npm audit --omit=dev
+      - name: Build deployable service image
+        run: docker build -t glyphwanders:ci .
