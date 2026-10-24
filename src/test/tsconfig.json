@@ -3,7 +3,7 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "lib": ["DOM", "ES2023"],
-    "types": ["node"]
+    "types": ["node", "@cloudflare/workers-types"]
   },
   "include": ["../**/*.test.*", "../**/test/", "../**/test/**/*.json"],
   "exclude": ["${configDir}/node_modules/", "${configDir}/dist/"],

@@ -1,0 +1,8 @@
+# LOCAL Worker development only. Copy to .dev.vars (ignored), never commit secrets.
+# For a deployed Worker use Settings > Variables and Secrets or Wrangler secret put.
+PUBLIC_URL=https://glyphwanders.YOUR-SUBDOMAIN.workers.dev
+OAUTH_ISSUER=https://YOUR-TENANT.us.auth0.com/
+OAUTH_SUBJECT=auth0|YOUR_OWNER_USER_ID
+DEVVIT_MCP_URL=https://glyphwanders-SUBREDDITID-external.devvit.net/external/mcp
+# Add a real managed token privately when available; no fake credential is usable.
+# DEVVIT_TOKEN=
