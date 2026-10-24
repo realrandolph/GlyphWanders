@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import {test} from 'node:test'
+import {AppFailure} from './errors.ts'
 import {
   createExecutor,
   type RedditApi,
@@ -413,4 +414,91 @@ test('publish_post writes only to the target subreddit', async () => {
     text: 'Folded',
   })
   assert.equal(result.post.id, 't3_new')
+})
+
+test('a 429 read records the persistent cooldown', async () => {
+  let failures = 0
+  const executor = createExecutor(
+    makeApi({
+      getNewPosts: () => ({
+        hasMore: false,
+        get: async () => {
+          throw new Error('429 Too Many Requests token=secret')
+        },
+      }),
+    }),
+    target,
+    {
+      assertReady: async () => undefined,
+      recordFailure: async () => {
+        failures++
+      },
+      recordSuccess: async () => undefined,
+    },
+  )
+  await assert.rejects(executor.activity({limit: 5}), /rate_limited/)
+  assert.equal(failures, 1)
+})
+
+test('a cooldown blocks before a write reservation is made', async () => {
+  let reserved = false
+  let submitted = false
+  const executor = createExecutor(
+    makeApi({
+      submitPost: async () => {
+        submitted = true
+        return post
+      },
+    }),
+    target,
+    {
+      assertReady: async () => {
+        throw new AppFailure('rate_limited')
+      },
+      recordFailure: async () => undefined,
+      recordSuccess: async () => undefined,
+    },
+  )
+  await assert.rejects(
+    executor.publishPost(
+      {title: 'A title', body: 'A body', requestId: 'r1'},
+      async () => {
+        reserved = true
+      },
+    ),
+    /rate_limited/,
+  )
+  assert.equal(reserved, false)
+  assert.equal(submitted, false)
+})
+
+test('a 429 write records the cooldown after its reservation', async () => {
+  let failures = 0
+  let reserved = false
+  const executor = createExecutor(
+    makeApi({
+      submitPost: async () => {
+        throw new Error('429 Too Many Requests')
+      },
+    }),
+    target,
+    {
+      assertReady: async () => undefined,
+      recordFailure: async () => {
+        failures++
+      },
+      recordSuccess: async () => undefined,
+    },
+  )
+  await assert.rejects(
+    executor.publishPost(
+      {title: 'A title', body: 'A body', requestId: 'r1'},
+      async () => {
+        reserved = true
+      },
+    ),
+    /rate_limited/,
+  )
+  assert.equal(reserved, true)
+  assert.equal(failures, 1)
 })

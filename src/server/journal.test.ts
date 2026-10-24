@@ -2,7 +2,12 @@ import assert from 'node:assert/strict'
 import {test} from 'node:test'
 import type {CommentEventRequest} from '../shared/contracts.ts'
 import {AppFailure} from './errors.ts'
-import {createJournal, MemoryConflict} from './journal.ts'
+import {
+  createJournal,
+  MEMORY_KEY,
+  MemoryConflict,
+  PUBLICATION_KEY,
+} from './journal.ts'
 import {MemoryRedis} from './memory-redis.ts'
 
 const request = {
@@ -32,15 +37,40 @@ test('reserve blocks duplicate request ids and identical content', async () => {
 
 test('concurrent identical content writes one reservation', async () => {
   const journal = createJournal(new MemoryRedis())
+  const otherId = '77777777-7777-4777-8777-777777777777'
   const results = await Promise.all([
     journal.reserve(request),
-    journal.reserve({
-      ...request,
-      requestId: '77777777-7777-4777-8777-777777777777',
-    }),
+    journal.reserve({...request, requestId: otherId}),
   ])
   assert.equal(results.filter(result => result.duplicate === false).length, 1)
   assert.equal(new Set(results.map(result => result.entry.requestId)).size, 1)
+  for (const id of [request.requestId, otherId]) {
+    await assert.rejects(
+      journal.reserve({...request, requestId: id, body: 'Different'}),
+      (err: unknown) =>
+        err instanceof AppFailure && err.code === 'journal_conflict',
+    )
+  }
+})
+
+test('a duplicate content request id is bound to the duplicate content', async () => {
+  const journal = createJournal(new MemoryRedis())
+  const first = await journal.reserve(request)
+  await journal.succeed(first.entry, 't3_abc123')
+  const duplicateId = '88888888-8888-4888-8888-888888888888'
+
+  const duplicate = await journal.reserve({
+    ...request,
+    requestId: duplicateId,
+  })
+  assert.equal(duplicate.duplicate, true)
+  assert.equal(duplicate.entry.requestId, request.requestId)
+
+  await assert.rejects(
+    journal.reserve({...request, requestId: duplicateId, body: 'Different'}),
+    (err: unknown) =>
+      err instanceof AppFailure && err.code === 'journal_conflict',
+  )
 })
 
 test('a request id cannot be reused for different content', async () => {
@@ -77,6 +107,37 @@ test('a failed reservation write stops before any Reddit write', async () => {
   )
 })
 
+test('index failure leaves a durable pending reservation and no write path', async () => {
+  class BrokenIndex extends MemoryRedis {
+    override async zAdd(): Promise<number> {
+      throw new Error('index unavailable token=secret')
+    }
+  }
+  const journal = createJournal(new BrokenIndex())
+  await assert.rejects(
+    journal.reserve(request),
+    (err: unknown) =>
+      err instanceof AppFailure && err.code === 'journal_unavailable',
+  )
+  const retry = await journal.reserve(request)
+  assert.equal(retry.duplicate, true)
+  assert.equal(retry.entry.status, 'pending')
+})
+
+test('history reads only the bounded index, not the whole hash', async () => {
+  const redis = new MemoryRedis()
+  const journal = createJournal(redis)
+  await journal.reserve(request)
+  const raw = await redis.hGet(PUBLICATION_KEY, `r:${request.requestId}`)
+  assert.ok(raw)
+  await redis.hSet(PUBLICATION_KEY, {'r:ghost': raw})
+  const history = await journal.history(20)
+  assert.deepEqual(
+    history.publications.map(entry => entry.requestId),
+    [request.requestId],
+  )
+})
+
 test('history is compact and excludes duplicate aliases', async () => {
   const journal = createJournal(new MemoryRedis())
   const first = await journal.reserve(request)
@@ -107,6 +168,29 @@ test('memory compare-and-swap includes a null tombstone', async () => {
   assert.equal(cleared.value, null)
   assert.equal(cleared.version, 2)
   assert.deepEqual(await journal.readMemory(), cleared)
+})
+
+test('an EXEC conflict refreshes the memory version in the error', async () => {
+  const redis = new MemoryRedis()
+  const journal = createJournal(redis)
+  await journal.writeMemory('initial', 0)
+  redis.beforeExec = async () => {
+    await redis.set(
+      MEMORY_KEY,
+      JSON.stringify({
+        value: 'concurrent',
+        version: 2,
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      }),
+    )
+  }
+  await assert.rejects(
+    journal.writeMemory('mine', 1),
+    (err: unknown) =>
+      err instanceof MemoryConflict &&
+      err.current.version === 2 &&
+      err.current.value === 'concurrent',
+  )
 })
 
 test('two concurrent memory writes at one version cannot both win', async () => {

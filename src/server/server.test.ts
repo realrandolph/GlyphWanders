@@ -57,6 +57,140 @@ test('MCP endpoint lists seven tools and enforces the target subreddit', async (
   })
 })
 
+test('raw tools/list preserves auth metadata and output schemas', async () => {
+  await withServer(async ({base}) => {
+    const tools = await rawTools(base)
+    assert.equal(tools.length, 7)
+    for (const tool of tools) {
+      assert.equal(tool.inputSchema.additionalProperties, false)
+      assert.equal(tool.outputSchema?.type, 'object')
+      assert.equal(tool.outputSchema?.additionalProperties, true)
+      assert.ok(tool.annotations)
+      assert.deepEqual(tool._meta?.securitySchemes, tool.securitySchemes)
+      assert.ok(tool._meta?.securitySchemes)
+    }
+  })
+})
+
+test('journal menu rejects a non-target installation before reading', async () => {
+  const deps = createServerDeps()
+  let reads = 0
+  deps.journal.history = async () => {
+    reads++
+    return {publications: [], visitedPosts: []}
+  }
+  await withServer(async ({base}) => {
+    const response = await fetch(`${base}/internal/menu/journal`, {
+      method: 'POST',
+      headers: {'test-subreddit': 'Elsewhere'},
+    })
+    assert.equal(response.status, 403)
+    assert.equal(reads, 0)
+  }, deps)
+})
+
+test('a persisted cooldown blocks publication before reservation', async () => {
+  const deps = createServerDeps()
+  await deps.rateGate.recordFailure()
+  await withServer(async ({base}) => {
+    const client = await connect(base)
+    try {
+      const result = await call(client, 'publish_post', {
+        title: 'A title',
+        body: 'A body',
+        requestId: '99999999-9999-4999-8999-999999999999',
+      })
+      assert.equal(result.isError, true)
+      assert.equal(
+        (result.structuredContent as {code: string}).code,
+        'rate_limited',
+      )
+      assert.equal(deps.reservations.length, 0)
+      assert.equal(deps.submits.length, 0)
+    } finally {
+      await client.close()
+    }
+  }, deps)
+})
+
+test('a 429 read sets a cooldown that blocks the next read', async () => {
+  let reads = 0
+  const deps = createServerDeps({
+    getNewPosts: () => ({
+      hasMore: false,
+      get: async () => {
+        reads++
+        throw new Error('429 Too Many Requests token=secret')
+      },
+    }),
+  })
+  await withServer(async ({base}) => {
+    const client = await connect(base)
+    try {
+      const first = await call(client, 'read_activity', {limit: 5})
+      assert.equal(
+        (first.structuredContent as {code: string}).code,
+        'rate_limited',
+      )
+      assert.equal(JSON.stringify(first).includes('secret'), false)
+      assert.equal(reads, 1)
+
+      const blocked = await call(client, 'get_thread', {
+        postId: 't3_post1',
+      })
+      assert.equal(
+        (blocked.structuredContent as {code: string}).code,
+        'rate_limited',
+      )
+      assert.equal(reads, 1)
+    } finally {
+      await client.close()
+    }
+  }, deps)
+})
+
+test('a 429 write stays uncertain and sets the persisted cooldown', async () => {
+  let submitCalls = 0
+  const deps = createServerDeps({
+    submitPost: async () => {
+      submitCalls++
+      throw new Error('429 Too Many Requests token=secret')
+    },
+  })
+  await withServer(async ({base}) => {
+    const client = await connect(base)
+    try {
+      const first = await call(client, 'publish_post', {
+        title: 'A title',
+        body: 'A body',
+        requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      })
+      assert.equal(first.isError, true)
+      assert.equal(
+        (first.structuredContent as {code: string}).code,
+        'publication_uncertain',
+      )
+      assert.equal(JSON.stringify(first).includes('secret'), false)
+      assert.equal(submitCalls, 1)
+      assert.equal(deps.reservations.length, 1)
+
+      const blocked = await call(client, 'publish_post', {
+        title: 'Different title',
+        body: 'Different body',
+        requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      })
+      assert.equal(
+        (blocked.structuredContent as {code: string}).code,
+        'rate_limited',
+      )
+      assert.equal(submitCalls, 1)
+      assert.equal(deps.reservations.length, 1)
+    } finally {
+      await client.close()
+    }
+  }, deps)
+})
+
 test('read_activity returns live posts plus persisted comment pointers', async () => {
   await withServer(async ({base}) => {
     await postTrigger(base, {
@@ -397,6 +531,57 @@ test('write_memory enforces CAS versions and keeps a null tombstone', async () =
     }
   })
 })
+
+async function rawTools(base: string): Promise<
+  Array<{
+    inputSchema: {additionalProperties?: boolean}
+    outputSchema?: {type?: string; additionalProperties?: boolean}
+    annotations?: unknown
+    _meta?: {securitySchemes?: unknown}
+    securitySchemes?: unknown
+  }>
+> {
+  await rawRpc(base, {
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'initialize',
+    params: {
+      protocolVersion: '2025-03-26',
+      capabilities: {},
+      clientInfo: {name: 'raw-test', version: '1.0.0'},
+    },
+  })
+  const response = await rawRpc(base, {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/list',
+    params: {},
+  })
+  return response.result.tools as Array<{
+    inputSchema: {additionalProperties?: boolean}
+    outputSchema?: {type?: string; additionalProperties?: boolean}
+    annotations?: unknown
+    _meta?: {securitySchemes?: unknown}
+    securitySchemes?: unknown
+  }>
+}
+
+async function rawRpc(
+  base: string,
+  body: Record<string, unknown>,
+): Promise<{result: {tools: unknown[]}}> {
+  const response = await fetch(`${base}/external/mcp`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+      'test-subreddit': target,
+    },
+    body: JSON.stringify(body),
+  })
+  assert.equal(response.status, 200)
+  return (await response.json()) as {result: {tools: unknown[]}}
+}
 
 async function call(
   client: Client,
