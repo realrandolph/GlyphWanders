@@ -165,6 +165,22 @@ export function createAdapter(
           redirect: 'error',
           signal: AbortSignal.timeout(25000),
         })
+        if (response.status === 429) {
+          const retry = Number(response.headers.get('retry-after'))
+          res.setHeader(
+            'Retry-After',
+            String(
+              Number.isFinite(retry) && retry > 0
+                ? Math.min(Math.ceil(retry), 3600)
+                : 60,
+            ),
+          )
+          json(res, 429, {
+            error:
+              'Devvit rate limited. Retry later with the same publication requestId.',
+          })
+          return
+        }
         if (!response.ok) throw new Error('Devvit rejected request')
         if (response.status === 202 || response.status === 204) {
           res.writeHead(response.status)

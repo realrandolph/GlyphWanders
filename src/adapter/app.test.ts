@@ -26,6 +26,7 @@ test('stateless proxy preserves real MCP transport and enforces owner/scopes wit
   let forwarded = 0
   let publications = 0
   let rejectUpstream = false
+  let rateLimited = false
   const backend = createServer(async (req, res) => {
     assert.equal(req.headers.authorization, `Bearer ${config.DEVVIT_TOKEN}`)
     assert.equal(req.headers.cookie, undefined)
@@ -63,6 +64,8 @@ test('stateless proxy preserves real MCP transport and enforces owner/scopes wit
     assert.equal(url, config.DEVVIT_MCP_URL)
     assert.equal(init?.redirect, 'error')
     forwarded++
+    if (rateLimited)
+      return new Response(null, {status: 429, headers: {'Retry-After': '12'}})
     if (rejectUpstream)
       return new Response('private error containing secrets', {status: 401})
     return fetch(`http://127.0.0.1:${address.port}/external/mcp`, init)
@@ -167,6 +170,11 @@ test('stateless proxy preserves real MCP transport and enforces owner/scopes wit
     )
     assert.equal((await owner.callTool(write.params)).isError, undefined)
     assert.equal(publications, 1)
+    rateLimited = true
+    const cooldown = await post(write)
+    assert.equal(cooldown.status, 429)
+    assert.equal(cooldown.headers.get('retry-after'), '12')
+    rateLimited = false
     rejectUpstream = true
     const unavailable = await post(write)
     assert.equal(unavailable.status, 502)
