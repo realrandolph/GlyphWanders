@@ -45,6 +45,9 @@ test('JWT signature, issuer, resource audience, expiry and not-before are enforc
     sign().then(token => verifyAccessToken(token, other.publicKey, config)),
   )
   for (const changes of [
+    {PUBLIC_URL: 'not a URL'},
+    {OAUTH_ISSUER: 'not a URL'},
+    {DEVVIT_MCP_URL: 'not a URL'},
     {PUBLIC_URL: 'http://plain.example'},
     {DEVVIT_MCP_URL: 'https://evil.example/external/mcp'},
     {DEVVIT_MCP_URL: `${config.DEVVIT_MCP_URL}?externalToken=secret`},

@@ -77,7 +77,7 @@ export async function runSmoke(
       (reply.comment as {id: string} | undefined)?.id ?? reply.id,
     )
     console.info(
-      'Public test post and reply created; remove manually on Reddit if desired.',
+      'Public test post and reply created or deduplicated; inspect Reddit and remove test content manually if desired.',
     )
   } else
     console.info(
@@ -98,10 +98,19 @@ if (
       'Set PUBLIC_URL and a short-lived owner SMOKE_ACCESS_TOKEN from OAuth Inspector',
     )
   const client = new Client({name: 'GlyphWanders manual test', version: '2'})
+  let lastRequest = 0
   try {
     await client.connect(
       new StreamableHTTPClientTransport(new URL(`${origin}/mcp`), {
         requestInit: {headers: {Authorization: `Bearer ${token}`}},
+        // Stay below Devvit's documented 5 requests/sec during this sequential manual test.
+        fetch: async (url, init) => {
+          const delay = 350 - (Date.now() - lastRequest)
+          if (delay > 0)
+            await new Promise(resolve => setTimeout(resolve, delay))
+          lastRequest = Date.now()
+          return fetch(url, init)
+        },
       }),
     )
     await runSmoke(client, process.argv.slice(2))
