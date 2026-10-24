@@ -62,6 +62,12 @@ No supported mechanism eliminates the adapter. It can be reduced to protected-re
 - Keeps the managed token only in the adapter's secret store. Never place it in ChatGPT configuration, a URL, a tool result, or logs. Rotate by creating a new Devvit token, updating the adapter, and revoking the old token.
 - Enforces the single-owner policy itself, because Devvit executes all managed-token requests as the app account and cannot tell which ChatGPT user called.
 
+## Cloudflare Worker hosting
+
+The adapter can use Cloudflare's documented [`node:http` server integration](https://developers.cloudflare.com/workers/runtime-apis/nodejs/http/) (`cloudflare:node`), reusing the same authorization/proxy handler rather than creating another bridge. Network discovery must occur within a request, not during Worker module initialization. Secrets are supplied through [Worker bindings](https://developers.cloudflare.com/workers/configuration/secrets/); no Cloudflare database or scheduled resource is needed. The pinned compatibility date enables the documented Node compatibility behavior.
+
+Wrangler/dashboard configuration and verification are in `readme.md`. A deployment lacking its real Devvit/OAuth bindings is deliberately not ready. Local workerd tests use mocked upstreams; they do not verify live Reddit approval or ChatGPT linking. [Workers Free limits](https://developers.cloudflare.com/workers/platform/limits/) include 100,000 requests/day, 10 ms CPU/request and 50 subrequests/request. Low daily usage does not establish that cold authenticated requests satisfy the CPU limit; inspect real metrics after the operator supplies credentials. No plan upgrade or paid Cloudflare storage is required by this implementation.
+
 ## Unverified; verify before claiming
 
 - **External gateway method routing.** Devvit documents POST examples and no streaming, but does not state what its external gateway does with GET, DELETE, or unknown methods. Test `GET /external/mcp` and confirm 405 rather than assuming the handler sees it.

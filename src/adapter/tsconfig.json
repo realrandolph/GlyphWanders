@@ -1,5 +1,6 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": {"types": ["node", "@cloudflare/workers-types"]},
+  "compilerOptions": {"types": ["node"]},
+  "exclude": ["worker.ts", "**/*.test.*"],
   "references": [{"path": "../shared/"}]
 }
