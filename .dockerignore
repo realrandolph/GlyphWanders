@@ -1,0 +1,8 @@
+*
+!package.json
+!package-lock.json
+!src/
+!src/bridge/
+!src/bridge/*.ts
+!src/shared/
+!src/shared/*.ts
