@@ -73,7 +73,7 @@ export function lazyTokenVerifier(
 ) {
   let cached: {expiresAt: number; verify: (token: string) => Promise<Identity>}
   return async (token: string) => {
-    // Reject malformed compact JWTs before spending an IdP discovery request.
+    // Reject obviously non-JWT shapes before spending an IdP discovery request.
     // This is only a cheap shape check; jose performs all actual verification.
     if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token))
       throw new Error('Invalid access token')
