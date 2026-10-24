@@ -9,7 +9,6 @@
   "exclude": ["${configDir}/node_modules/", "${configDir}/dist/"],
   "references": [
     {"path": "../bridge/"},
-    {"path": "../client/"},
     {"path": "../server/"},
     {"path": "../shared/"}
   ]

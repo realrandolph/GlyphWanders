@@ -1,29 +1,59 @@
 {
   "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
   "name": "glyphwanders",
-  "post": {
-    "entrypoints": {
-      "default": {
-        "entry": "splash.html"
-      },
-      "game": {
-        "entry": "game.html"
-      }
-    }
+  "server": {
+    "dir": "dist/server",
+    "entry": "index.js"
   },
-  "server": {},
+  "permissions": {
+    "http": {
+      "enable": true,
+      "domains": ["glyph.example.com"]
+    },
+    "reddit": true
+  },
   "menu": {
     "items": [
       {
-        "label": "[glyphwanders] New Post",
-        "description": "Create a new glyphwanders post.",
+        "label": "[glyphwanders] Poll worker",
+        "description": "Claim and execute at most one queued worker job.",
+        "forUserType": "moderator",
         "location": "subreddit",
-        "endpoint": "/internal/on/menu/new-post"
+        "endpoint": "/internal/menu/poll"
       }
     ]
   },
+  "scheduler": {
+    "tasks": {
+      "worker-poll": {
+        "endpoint": "/internal/scheduler/poll",
+        "cron": "* * * * *"
+      }
+    }
+  },
   "triggers": {
-    "onAppInstall": "/internal/on/app/install"
+    "onCommentCreate": "/internal/triggers/comment"
+  },
+  "settings": {
+    "global": {
+      "bridge-token": {
+        "type": "string",
+        "label": "Bridge worker token",
+        "helpText": "Bearer token sent to the bridge. Set with the Devvit CLI.",
+        "isSecret": true
+      }
+    },
+    "subreddit": {
+      "bridge-url": {
+        "type": "string",
+        "label": "Bridge base URL",
+        "helpText": "HTTPS base URL of the worker bridge. Its hostname must also be allowed in permissions.http.domains.",
+        "defaultValue": ""
+      }
+    }
+  },
+  "dev": {
+    "subreddit": "GlyphsPlayground"
   },
   "scripts": {
     "dev": "npm run watch"

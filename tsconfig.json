@@ -4,7 +4,6 @@
   "references": [
     {"path": "./scripts/"},
     {"path": "./src/bridge/"},
-    {"path": "./src/client/"},
     {"path": "./src/server/"},
     {"path": "./src/shared/"},
     {"path": "./src/test/"}

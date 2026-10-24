@@ -5,12 +5,11 @@
   "license": "BSD-3-Clause",
   "type": "module",
   "scripts": {
-    "build": "npm run build:client -- --metafile=dist/client.meta.json --minify && npm run build:server -- --metafile=dist/server.meta.json --minify && npm run build:bridge",
+    "build": "npm run build:server -- --metafile=dist/server.meta.json --minify && npm run build:bridge",
     "build:bridge": "esbuild --bundle --packages=external --platform=node --target=node24 --format=esm --outdir=dist/bridge src/bridge/index.ts",
     "bridge:start": "node --env-file=.env dist/bridge/index.js",
     "bridge:smoke": "node --env-file=.env --experimental-strip-types scripts/smoke.ts",
     "bridge:reconcile": "node --env-file=.env --experimental-strip-types scripts/reconcile.ts",
-    "build:client": "esbuild --bundle --log-level=warning --sourcemap=linked --target=es2023 --format=esm --outdir=public --platform=browser src/client/splash.ts src/client/game.ts",
     "build:server": "esbuild --bundle --log-level=warning --sourcemap=linked --target=es2023 --format=cjs --outdir=dist/server --platform=node src/server/index.ts",
     "clean": "rm -rf dist/ public/*.js*",
     "format": "npm run lint -- --fix",
@@ -20,7 +19,7 @@
     "test:types": "tsc --build",
     "test:unit": "node --experimental-strip-types --no-warnings=ExperimentalWarning --test src/**/*.test.ts",
     "publish": "npm run clean && npm run build && devvit publish",
-    "watch": "sh -c 'trap \"kill 0\" exit; npm run build:client -- --watch=forever& npm run build:server -- --watch=forever& wait' --"
+    "watch": "npm run build:server -- --watch=forever"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
