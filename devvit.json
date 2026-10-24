@@ -15,17 +15,6 @@
     "redis": true,
     "reddit": true
   },
-  "menu": {
-    "items": [
-      {
-        "label": "[glyphwanders] Publication journal",
-        "description": "Read-only summary of publication statuses. Never resubmit pending or uncertain writes.",
-        "forUserType": "moderator",
-        "location": "subreddit",
-        "endpoint": "/internal/menu/journal"
-      }
-    ]
-  },
   "triggers": {
     "onCommentCreate": "/internal/triggers/comment"
   },

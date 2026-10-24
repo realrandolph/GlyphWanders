@@ -1,6 +1,6 @@
 import type {IncomingMessage, ServerResponse} from 'node:http'
-import {context, reddit, redis} from '@devvit/web/server'
-import type {TriggerResponse, UiResponse} from '@devvit/web/shared'
+import {context, redis} from '@devvit/web/server'
+import type {TriggerResponse} from '@devvit/web/shared'
 import {StreamableHTTPServerTransport} from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import {TARGET_SUBREDDIT} from '../shared/contracts.ts'
 import {handleCommentCreate} from './comment-events.ts'
@@ -80,14 +80,6 @@ async function route(
     return
   }
 
-  if (reqMsg.method === 'POST' && path === '/internal/menu/journal') {
-    reqMsg.resume()
-    if (!isTarget(deps)) throw new HttpError(403, 'forbidden')
-    const response = await journalMenu(deps)
-    writeJson<UiResponse>(200, response, rspMsg)
-    return
-  }
-
   reqMsg.resume()
   if (path === '/external/mcp') {
     rspMsg.setHeader('Allow', 'POST')
@@ -163,50 +155,6 @@ async function commentTrigger(
     console.error(`comment event failed: ${errorCode(err)}`)
   }
   return {}
-}
-
-/** Read-only moderator view; it never mutates or replays journal entries. */
-async function journalMenu(deps: ServerDeps): Promise<UiResponse> {
-  if (!(await isModerator())) {
-    return toast('Only moderators can inspect the publication journal.')
-  }
-  try {
-    const history = await deps.journal.history(100)
-    const counts = {pending: 0, succeeded: 0, uncertain: 0}
-    for (const entry of history.publications) counts[entry.status]++
-    return toast(
-      `Publication journal: ${counts.succeeded} succeeded, ${counts.pending} pending, ${counts.uncertain} uncertain. Pending/uncertain writes must never be resubmitted.`,
-      counts.uncertain === 0 && counts.pending === 0,
-    )
-  } catch (err) {
-    console.error(`journal menu failed: ${errorCode(err)}`)
-    return toast('Publication journal is temporarily unavailable.')
-  }
-}
-
-function toast(text: string, success = false): UiResponse {
-  return {
-    showToast: {text, appearance: success ? 'success' : 'neutral'},
-  }
-}
-
-async function isModerator(): Promise<boolean> {
-  const target = TARGET_SUBREDDIT
-  const username = context.username || (await reddit.getCurrentUsername())
-  if (!username) return false
-  try {
-    const listing = reddit.getModerators({
-      subredditName: target,
-      username,
-      limit: 1,
-    })
-    const moderators = await listing.get(1)
-    return moderators.some(
-      mod => mod.username.toLowerCase() === username.toLowerCase(),
-    )
-  } catch {
-    return false
-  }
 }
 
 async function readJson(reqMsg: IncomingMessage): Promise<unknown> {

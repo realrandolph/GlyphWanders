@@ -72,7 +72,7 @@ test('raw tools/list preserves auth metadata and output schemas', async () => {
   })
 })
 
-test('journal menu rejects a non-target installation before reading', async () => {
+test('obsolete menu routes expose no state or UI', async () => {
   const deps = createServerDeps()
   let reads = 0
   deps.journal.history = async () => {
@@ -84,7 +84,7 @@ test('journal menu rejects a non-target installation before reading', async () =
       method: 'POST',
       headers: {'test-subreddit': 'Elsewhere'},
     })
-    assert.equal(response.status, 403)
+    assert.equal(response.status, 404)
     assert.equal(reads, 0)
   }, deps)
 })
