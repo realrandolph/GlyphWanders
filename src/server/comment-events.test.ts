@@ -26,20 +26,20 @@ function payload() {
   }
 }
 
-test('captures a comment created on an old post', async () => {
-  const posted: CommentEventRequest[] = []
+test('records a comment created on an old post without its text', async () => {
+  const recorded: CommentEventRequest[] = []
   const captured = await handleCommentCreate(payload(), {
     getComment: async id => {
       assert.equal(id, 't1_comment1')
       return oldPostComment
     },
-    postComment: async event => {
-      posted.push(event)
+    record: async event => {
+      recorded.push(event)
     },
   })
 
   assert.equal(captured, true)
-  assert.deepEqual(posted, [
+  assert.deepEqual(recorded, [
     {
       subreddit: target,
       comment: {
@@ -49,24 +49,28 @@ test('captures a comment created on an old post', async () => {
       },
     },
   ])
+  assert.equal(
+    JSON.stringify(recorded).includes('A comment on an old post'),
+    false,
+  )
 })
 
-test('does not post a non-target comment', async () => {
-  let posted = false
+test('does not record a non-target comment', async () => {
+  let recorded = false
   const captured = await handleCommentCreate(payload(), {
     getComment: async () => ({...oldPostComment, subredditName: 'Elsewhere'}),
-    postComment: async () => {
-      posted = true
+    record: async () => {
+      recorded = true
     },
   })
 
   assert.equal(captured, false)
-  assert.equal(posted, false)
+  assert.equal(recorded, false)
 })
 
 test('ignores malformed events without reading Reddit', async () => {
   let read = false
-  let posted = false
+  let recorded = false
   const captured = await handleCommentCreate(
     {type: 'CommentCreate', comment: {id: 'not-a-comment'}},
     {
@@ -74,13 +78,13 @@ test('ignores malformed events without reading Reddit', async () => {
         read = true
         return oldPostComment
       },
-      postComment: async () => {
-        posted = true
+      record: async () => {
+        recorded = true
       },
     },
   )
 
   assert.equal(captured, false)
   assert.equal(read, false)
-  assert.equal(posted, false)
+  assert.equal(recorded, false)
 })

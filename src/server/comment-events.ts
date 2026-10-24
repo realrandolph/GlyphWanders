@@ -17,12 +17,13 @@ const CommentCreatePayloadSchema = z
 
 export type CommentEventDeps = {
   getComment: (id: string) => Promise<RedditComment>
-  postComment: (event: CommentEventRequest) => Promise<void>
+  record: (event: CommentEventRequest) => Promise<void>
   target?: string
 }
 
 /**
- * Best-effort capture for comments created after installation. There is no
+ * Best-effort metadata capture for comments created after installation. Only
+ * IDs and timestamps are stored; comment text stays in Reddit. There is no
  * backfill; get_thread remains the fallback for historical comments.
  */
 export async function handleCommentCreate(
@@ -38,7 +39,7 @@ export async function handleCommentCreate(
   const target = deps.target ?? TARGET_SUBREDDIT
   if (comment.subredditName.toLowerCase() !== target.toLowerCase()) return false
 
-  await deps.postComment({
+  await deps.record({
     subreddit: TARGET_SUBREDDIT,
     comment: {
       id: comment.id,

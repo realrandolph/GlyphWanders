@@ -1,0 +1,139 @@
+import assert from 'node:assert/strict'
+import {test} from 'node:test'
+import type {CommentEventRequest} from '../shared/contracts.ts'
+import {AppFailure} from './errors.ts'
+import {createJournal, MemoryConflict} from './journal.ts'
+import {MemoryRedis} from './memory-redis.ts'
+
+const request = {
+  kind: 'publish_post' as const,
+  title: 'A title',
+  body: 'A body',
+  requestId: '11111111-1111-4111-8111-111111111111',
+}
+
+test('reserve blocks duplicate request ids and identical content', async () => {
+  const journal = createJournal(new MemoryRedis())
+  const first = await journal.reserve(request)
+  assert.equal(first.duplicate, false)
+  assert.equal(first.entry.status, 'pending')
+
+  const retry = await journal.reserve(request)
+  assert.equal(retry.duplicate, true)
+  assert.equal(retry.entry.status, 'pending')
+
+  const sameContent = await journal.reserve({
+    ...request,
+    requestId: '22222222-2222-4222-8222-222222222222',
+  })
+  assert.equal(sameContent.duplicate, true)
+  assert.equal(sameContent.entry.requestId, request.requestId)
+})
+
+test('concurrent identical content writes one reservation', async () => {
+  const journal = createJournal(new MemoryRedis())
+  const results = await Promise.all([
+    journal.reserve(request),
+    journal.reserve({
+      ...request,
+      requestId: '77777777-7777-4777-8777-777777777777',
+    }),
+  ])
+  assert.equal(results.filter(result => result.duplicate === false).length, 1)
+  assert.equal(new Set(results.map(result => result.entry.requestId)).size, 1)
+})
+
+test('a request id cannot be reused for different content', async () => {
+  const journal = createJournal(new MemoryRedis())
+  await journal.reserve(request)
+  await assert.rejects(
+    journal.reserve({...request, body: 'Different'}),
+    (err: unknown) =>
+      err instanceof AppFailure && err.code === 'journal_conflict',
+  )
+})
+
+test('a succeeded publication is returned without another reservation', async () => {
+  const journal = createJournal(new MemoryRedis())
+  const first = await journal.reserve(request)
+  await journal.succeed(first.entry, 't3_abc123')
+  const retry = await journal.reserve(request)
+  assert.equal(retry.duplicate, true)
+  assert.equal(retry.entry.status, 'succeeded')
+  assert.equal(retry.entry.id, 't3_abc123')
+})
+
+test('a failed reservation write stops before any Reddit write', async () => {
+  class Broken extends MemoryRedis {
+    override async hSetNX(): Promise<number> {
+      throw new Error('storage quota token=secret')
+    }
+  }
+  const journal = createJournal(new Broken())
+  await assert.rejects(
+    journal.reserve(request),
+    (err: unknown) =>
+      err instanceof AppFailure && err.code === 'journal_unavailable',
+  )
+})
+
+test('history is compact and excludes duplicate aliases', async () => {
+  const journal = createJournal(new MemoryRedis())
+  const first = await journal.reserve(request)
+  await journal.succeed(first.entry, 't3_abc123')
+  await journal.reserve({...request, body: 'Different', requestId: 'uuid-2'})
+  const history = await journal.history(20)
+  assert.equal(history.publications.length, 2)
+  assert.deepEqual(history.publications.map(entry => entry.status).sort(), [
+    'pending',
+    'succeeded',
+  ])
+  assert.equal(JSON.stringify(history).includes('A body'), false)
+})
+
+test('memory compare-and-swap includes a null tombstone', async () => {
+  const journal = createJournal(new MemoryRedis())
+  const created = await journal.writeMemory('remember', 0)
+  assert.equal(created.version, 1)
+  assert.equal(created.value, 'remember')
+
+  await assert.rejects(
+    journal.writeMemory('stale', 0),
+    (err: unknown) =>
+      err instanceof MemoryConflict && err.current.version === 1,
+  )
+
+  const cleared = await journal.writeMemory(null, 1)
+  assert.equal(cleared.value, null)
+  assert.equal(cleared.version, 2)
+  assert.deepEqual(await journal.readMemory(), cleared)
+})
+
+test('two concurrent memory writes at one version cannot both win', async () => {
+  const journal = createJournal(new MemoryRedis())
+  const results = await Promise.allSettled([
+    journal.writeMemory('left', 0),
+    journal.writeMemory('right', 0),
+  ])
+  assert.equal(
+    results.filter(result => result.status === 'fulfilled').length,
+    1,
+  )
+  const rejected = results.find(result => result.status === 'rejected')
+  assert.ok(rejected && rejected.status === 'rejected')
+  assert.ok(rejected.reason instanceof MemoryConflict)
+  assert.equal((await journal.readMemory()).version, 1)
+})
+
+test('comment events store pointers only and keep the newest bounded set', async () => {
+  const journal = createJournal(new MemoryRedis())
+  const event = (id: string, createdAt: string): CommentEventRequest => ({
+    subreddit: 'GlyphsPlayground',
+    comment: {id, postId: 't3_post1', createdAt},
+  })
+  await journal.recordComment(event('t1_old', '2026-01-01T00:00:00.000Z'))
+  await journal.recordComment(event('t1_new', '2026-02-01T00:00:00.000Z'))
+  assert.deepEqual(await journal.recentComments(1), [
+    {id: 't1_new', postId: 't3_post1', createdAt: '2026-02-01T00:00:00.000Z'},
+  ])
+})
