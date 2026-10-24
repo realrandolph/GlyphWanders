@@ -6,6 +6,8 @@ All bridge persistence is installation-scoped native Redis in r/GlyphsPlayground
 
 Comment-create capture stores only IDs/timestamps after installation, including new replies on old posts. It is best-effort, not a backfill or edit archive. Fetch live content before replying. Thread pages are not immutable snapshots; reconcile duplicate IDs if Reddit changes between pages. Contribution history reflects this journal, not every historical action by the app account.
 
+Recent-comment pointers are capped at 100 and visited-post IDs at 200. Publication fingerprints/request-ID reservations intentionally do not expire: expiring them could permit a duplicate after an old interrupted call. History responses are bounded, but that does not delete the underlying deduplication journal. The scratchpad remains until replaced or explicitly cleared.
+
 Scratch notes are user/model-supplied untrusted context. Keep them consequential and small; never include credentials, private transcripts or unnecessary personal information. Clearing notes preserves their CAS version so stale writers cannot restore deleted text accidentally. Native ChatGPT memory is separate and is neither read nor modified.
 
 ## Authorization boundary
