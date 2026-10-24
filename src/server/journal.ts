@@ -13,7 +13,6 @@ export type RedisLike = {
   hGet(key: string, field: string): Promise<string | undefined>
   hSet(key: string, fieldValues: {[field: string]: string}): Promise<unknown>
   hSetNX(key: string, field: string, value: string): Promise<number>
-  hGetAll(key: string): Promise<Record<string, string>>
   zAdd(
     key: string,
     ...members: Array<{member: string; score: number}>
@@ -30,7 +29,6 @@ export type RedisLike = {
 }
 
 export type TxLike = {
-  get(key: string): Promise<unknown>
   multi(): Promise<unknown>
   set(key: string, value: string): Promise<unknown>
   exec(): Promise<unknown[] | null>
@@ -254,6 +252,11 @@ export function createJournal(
       )
       const winner = winnerField ? await readEntry(winnerField) : undefined
       if (!winnerField || !winner) throw new AppFailure('journal_unavailable')
+      if (winnerField === requestField) {
+        // A concurrent retry repaired this alias; do not make a self-link.
+        await indexEntry(winner, false)
+        return {entry: winner, duplicate: true}
+      }
       const link: StoredEntry = {
         ...pending,
         status: 'duplicate',
@@ -406,9 +409,9 @@ export function createJournal(
     let multiStarted = false
     let executed = false
     try {
-      const current = parseMemory(
-        await guard(() => readWatched(tx, redis, MEMORY_KEY)),
-      )
+      // Devvit 0.15 TxClient.get queues a command and returns itself, not data.
+      // A base-client read after WATCH is safe: any subsequent change aborts EXEC.
+      const current = parseMemory(await guard(() => redis.get(MEMORY_KEY)))
       if (current.version !== expectedVersion) throw new MemoryConflict(current)
       const next: MemoryDoc = {
         value,
@@ -420,7 +423,9 @@ export function createJournal(
       await guard(() => tx.set(MEMORY_KEY, JSON.stringify(next)))
       const result = await guard(() => tx.exec())
       executed = true
-      if (result === null) {
+      // Only one SET was queued. The installed SDK always returns an array;
+      // an empty/aborted result must never be reported as a successful CAS.
+      if (result?.length !== 1 || result[0] !== 'OK') {
         throw new MemoryConflict(await readMemory().catch(() => current))
       }
       return next
@@ -528,25 +533,4 @@ async function guard<T>(fn: () => Promise<T>): Promise<T> {
     if (err instanceof AppFailure) throw err
     throw new AppFailure('journal_unavailable')
   }
-}
-
-/**
- * Read through a watched transaction. Devvit 0.15's TxClient.get is typed as
- * returning the client itself, so when no string arrives (or the transaction
- * rejects a pre-MULTI read) we read the watched key through the base client
- * before EXEC. The WATCH still detects any change after it was installed.
- */
-export async function readWatched(
-  tx: TxLike,
-  redis: RedisLike,
-  key: string,
-): Promise<string | undefined> {
-  try {
-    const value = await tx.get(key)
-    if (typeof value === 'string') return value
-    if (typeof value === 'undefined') return undefined
-  } catch {
-    // Fall through to the base read; WATCH remains installed.
-  }
-  return redis.get(key)
 }

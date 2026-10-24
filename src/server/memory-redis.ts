@@ -58,10 +58,6 @@ export class MemoryRedis implements RedisLike {
     return 1
   }
 
-  async hGetAll(key: string): Promise<Record<string, string>> {
-    return Object.fromEntries(this.hash(key).value)
-  }
-
   async zAdd(
     key: string,
     ...members: Array<{member: string; score: number}>
@@ -116,10 +112,6 @@ export class MemoryRedis implements RedisLike {
     const queued: Array<() => void> = []
     let multiStarted = false
     return {
-      get: async (key: string) => {
-        if (multiStarted) throw new Error('GET inside MULTI')
-        return await this.get(key)
-      },
       multi: async () => {
         multiStarted = true
       },
@@ -138,10 +130,10 @@ export class MemoryRedis implements RedisLike {
         if (!multiStarted) throw new Error('EXEC without MULTI')
         if (this.beforeExec) await this.beforeExec()
         for (const [key, version] of versions) {
-          if (this.version(key) !== version) return null
+          if (this.version(key) !== version) return []
         }
         for (const apply of queued) apply()
-        return []
+        return queued.map(() => 'OK')
       },
       discard: async () => {
         queued.length = 0

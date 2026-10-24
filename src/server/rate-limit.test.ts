@@ -51,3 +51,23 @@ test('a Redis failure fails closed as rate limited, never as auth', async () => 
   const gate = createRateGate(new Broken())
   await assert.rejects(gate.assertReady(), isRateLimited)
 })
+
+test('a late concurrent success cannot clear an active 429 cooldown', async () => {
+  const gate = createRateGate(new MemoryRedis(), () => 1_000_000)
+  await gate.recordFailure()
+  await gate.recordSuccess()
+  await assert.rejects(gate.assertReady(), isRateLimited)
+})
+
+test('empty native SDK EXEC arrays never claim a cooldown was persisted', async () => {
+  class Aborted extends MemoryRedis {
+    override async watch(...keys: string[]) {
+      const tx = await super.watch(...keys)
+      return {...tx, exec: async () => []}
+    }
+  }
+  await assert.rejects(
+    createRateGate(new Aborted()).recordFailure(),
+    isRateLimited,
+  )
+})

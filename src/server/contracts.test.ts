@@ -54,7 +54,7 @@ test('writes validate lengths', () => {
     PublishPostArgsSchema.safeParse({
       title: 'x'.repeat(301),
       body: '',
-      requestId: 'r1',
+      requestId: '11111111-1111-4111-8111-111111111111',
     }).success,
     false,
   )
@@ -62,7 +62,7 @@ test('writes validate lengths', () => {
     PublishPostArgsSchema.safeParse({
       title: 'Title',
       body: 'x'.repeat(40001),
-      requestId: 'r1',
+      requestId: '11111111-1111-4111-8111-111111111111',
     }).success,
     false,
   )
@@ -70,7 +70,7 @@ test('writes validate lengths', () => {
     ReplyArgsSchema.safeParse({
       parentId: 't2_abc',
       body: 'hello',
-      requestId: 'r1',
+      requestId: '11111111-1111-4111-8111-111111111111',
     }).success,
     false,
   )
@@ -78,7 +78,7 @@ test('writes validate lengths', () => {
     ReplyArgsSchema.safeParse({
       parentId: 't1_abc',
       body: 'x'.repeat(10001),
-      requestId: 'r1',
+      requestId: '11111111-1111-4111-8111-111111111111',
     }).success,
     false,
   )

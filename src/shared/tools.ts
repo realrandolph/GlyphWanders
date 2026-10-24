@@ -7,27 +7,14 @@ import {
   ThreadArgsSchema,
 } from './contracts.ts'
 
-const requestId = z
-  .string()
-  .uuid()
-  .describe(
-    'Publication idempotency key. Reuse unchanged after any retry or interruption; never bypass an uncertain result with a new key.',
-  )
 const limit = z.number().int().min(1).max(50).default(20)
 export const schemas = {
-  read_activity: ActivityArgsSchema.strict(),
+  read_activity: ActivityArgsSchema,
   get_thread: ThreadArgsSchema.extend({
     offset: z.number().int().min(0).max(10000).default(0),
   }).strict(),
-  publish_post: PublishPostArgsSchema.extend({
-    title: z.string().trim().min(1).max(300),
-    body: z.string().trim().min(1).max(40000),
-    requestId,
-  }).strict(),
-  reply: ReplyArgsSchema.extend({
-    body: z.string().trim().min(1).max(10000),
-    requestId,
-  }).strict(),
+  publish_post: PublishPostArgsSchema,
+  reply: ReplyArgsSchema,
   participation_history: z.object({limit}).strict(),
   read_memory: z.object({}).strict(),
   write_memory: z

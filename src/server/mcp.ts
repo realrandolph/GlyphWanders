@@ -58,11 +58,7 @@ export function createMcpServer(deps: McpDeps): Server {
     name: ToolName,
     raw: Record<string, unknown>,
   ): Promise<CallToolResult> {
-    const input = {...raw}
-    if (typeof input.requestId === 'string')
-      input.requestId = input.requestId.trim()
-    if (typeof input.parentId === 'string')
-      input.parentId = input.parentId.trim()
+    const input = raw
     try {
       switch (name) {
         case 'read_activity':

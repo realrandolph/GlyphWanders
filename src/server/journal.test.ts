@@ -83,6 +83,31 @@ test('a request id cannot be reused for different content', async () => {
   )
 })
 
+test('a retry repairing an in-flight alias cannot create a self-referential duplicate', async t => {
+  const redis = new MemoryRedis()
+  const journal = createJournal(redis)
+  const setNX = redis.hSetNX.bind(redis)
+  let repaired = false
+  t.mock.method(
+    redis,
+    'hSetNX',
+    async (key: string, field: string, value: string) => {
+      if (field.startsWith('c:') && !repaired) {
+        repaired = true
+        await journal.reserve(request)
+      }
+      return setNX(key, field, value)
+    },
+  )
+  const reserved = await journal.reserve(request)
+  assert.equal(reserved.duplicate, true)
+  assert.equal(reserved.entry.status, 'pending')
+  const raw = await redis.hGet(PUBLICATION_KEY, `r:${request.requestId}`)
+  assert.ok(raw)
+  assert.equal(JSON.parse(raw).duplicateOf, undefined)
+  assert.equal((await journal.history(10)).publications.length, 1)
+})
+
 test('a succeeded publication is returned without another reservation', async () => {
   const journal = createJournal(new MemoryRedis())
   const first = await journal.reserve(request)
@@ -207,6 +232,18 @@ test('two concurrent memory writes at one version cannot both win', async () => 
   assert.ok(rejected && rejected.status === 'rejected')
   assert.ok(rejected.reason instanceof MemoryConflict)
   assert.equal((await journal.readMemory()).version, 1)
+})
+
+test('empty native SDK EXEC arrays are conflicts, not successful memory writes', async () => {
+  class Aborted extends MemoryRedis {
+    override async watch(...keys: string[]) {
+      const tx = await super.watch(...keys)
+      return {...tx, exec: async () => []}
+    }
+  }
+  const journal = createJournal(new Aborted())
+  await assert.rejects(journal.writeMemory('not saved', 0), MemoryConflict)
+  assert.equal((await journal.readMemory()).version, 0)
 })
 
 test('comment events store pointers only and keep the newest bounded set', async () => {

@@ -1,5 +1,5 @@
 import {AppFailure} from './errors.ts'
-import {type RedisLike, readWatched} from './journal.ts'
+import type {RedisLike} from './journal.ts'
 
 export const RATE_KEY = 'glyphwanders:rate'
 const BASE_DELAY_MS = 60_000
@@ -54,6 +54,8 @@ export function createRateGate(
 
   async function recordSuccess(): Promise<void> {
     await update(state => {
+      // A success already in flight must not erase a concurrent 429 cooldown.
+      if (state.nextAttemptAt > now()) return undefined
       if (state.failures === 0 && state.nextAttemptAt === 0) return undefined
       return {failures: 0, nextAttemptAt: 0, updatedAt: now()}
     })
@@ -67,7 +69,7 @@ export function createRateGate(
       let multiStarted = false
       let executed = false
       try {
-        const current = parseRate(await readWatched(tx, redis, RATE_KEY))
+        const current = parseRate(await redis.get(RATE_KEY))
         const value = next(current)
         if (!value) {
           await tx.unwatch()
@@ -78,7 +80,7 @@ export function createRateGate(
         await tx.set(RATE_KEY, JSON.stringify(value))
         const result = await tx.exec()
         executed = true
-        if (result !== null) return
+        if (result?.length === 1 && result[0] === 'OK') return
       } catch (err) {
         if (!multiStarted) await tx.unwatch().catch(() => undefined)
         else if (!executed) await tx.discard().catch(() => undefined)

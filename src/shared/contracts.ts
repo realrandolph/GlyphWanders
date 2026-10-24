@@ -9,61 +9,80 @@ export const THREAD_DEFAULT_LIMIT = 100
 export const THREAD_MAX_LIMIT = 100
 export const THREAD_MAX_OFFSET = 10000
 
-const FULLNAME_RE = /^t[1-6]_[a-z0-9]+$/i
 const POST_ID_RE = /^t3_[a-z0-9]+$/i
 const COMMENT_ID_RE = /^t1_[a-z0-9]+$/i
 const PARENT_ID_RE = /^t[13]_[a-z0-9]+$/i
 
-const fullname = z
+const postId = z
   .string()
+  .trim()
+  .toLowerCase()
   .max(32)
-  .regex(FULLNAME_RE, 'expected a Reddit fullname')
-const postId = z.string().max(32).regex(POST_ID_RE, 'expected a t3_ post id')
+  .regex(POST_ID_RE, 'expected a t3_ post id')
 const commentId = z
   .string()
+  .trim()
+  .toLowerCase()
   .max(32)
   .regex(COMMENT_ID_RE, 'expected a t1_ comment id')
 const parentId = z
   .string()
+  .trim()
+  .toLowerCase()
   .max(32)
   .regex(PARENT_ID_RE, 'expected a t1_ comment or t3_ post id')
 
-/* Tool arguments. The MCP layer tightens these (trimming and UUIDs). */
-export const ActivityArgsSchema = z.object({
-  limit: z
-    .number()
-    .int()
-    .min(1)
-    .max(ACTIVITY_MAX_LIMIT)
-    .default(ACTIVITY_DEFAULT_LIMIT),
-  after: postId.optional(),
-})
+const requestId = z
+  .string()
+  .trim()
+  .uuid()
+  .describe(
+    'Publication idempotency key. Reuse unchanged after any retry or interruption; never bypass an uncertain result with a new key.',
+  )
 
-export const ThreadArgsSchema = z.object({
-  postId,
-  commentId: commentId.optional(),
-  // Optional here so internal callers and older tests omit it; the MCP schema
-  // applies the documented default of 0.
-  offset: z.number().int().min(0).max(THREAD_MAX_OFFSET).optional(),
-  limit: z
-    .number()
-    .int()
-    .min(1)
-    .max(THREAD_MAX_LIMIT)
-    .default(THREAD_DEFAULT_LIMIT),
-})
+/* Canonical, strict tool arguments. */
+export const ActivityArgsSchema = z
+  .object({
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(ACTIVITY_MAX_LIMIT)
+      .default(ACTIVITY_DEFAULT_LIMIT),
+    after: postId.optional(),
+  })
+  .strict()
 
-export const PublishPostArgsSchema = z.object({
-  title: z.string().min(1).max(300),
-  body: z.string().max(40000),
-  requestId: z.string().min(1).max(128),
-})
+export const ThreadArgsSchema = z
+  .object({
+    postId,
+    commentId: commentId.optional(),
+    // The executor defaults an omitted offset to 0.
+    offset: z.number().int().min(0).max(THREAD_MAX_OFFSET).optional(),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(THREAD_MAX_LIMIT)
+      .default(THREAD_DEFAULT_LIMIT),
+  })
+  .strict()
 
-export const ReplyArgsSchema = z.object({
-  parentId,
-  body: z.string().min(1).max(10000),
-  requestId: z.string().min(1).max(128),
-})
+export const PublishPostArgsSchema = z
+  .object({
+    title: z.string().trim().min(1).max(300),
+    body: z.string().trim().min(1).max(40000),
+    requestId,
+  })
+  .strict()
+
+export const ReplyArgsSchema = z
+  .object({
+    parentId,
+    body: z.string().trim().min(1).max(10000),
+    requestId,
+  })
+  .strict()
 
 /* Sanitized result data. No Reddit model objects leave the app. */
 export const PostDataSchema = z.object({
@@ -87,24 +106,19 @@ export const CommentDataSchema = z.object({
   createdAt: z.string(),
 })
 
+/** A compact comment pointer; no comment text is persisted. */
+export const RecentCommentSchema = CommentDataSchema.pick({
+  id: true,
+  postId: true,
+  createdAt: true,
+}).strict()
 export const CommentEventRequestSchema = z.object({
   subreddit: z.literal(TARGET_SUBREDDIT),
-  comment: CommentDataSchema.pick({
-    id: true,
-    postId: true,
-    createdAt: true,
-  }).strict(),
-})
-
-/** A compact comment pointer; no comment text is persisted. */
-export const RecentCommentSchema = z.object({
-  id: z.string().regex(COMMENT_ID_RE),
-  postId: z.string().regex(POST_ID_RE),
-  createdAt: z.string(),
+  comment: RecentCommentSchema,
 })
 
 const activityPage = z.object({
-  nextAfter: fullname.nullable(),
+  nextAfter: postId.nullable(),
   hasMore: z.boolean(),
 })
 const commentPage = z.object({
@@ -142,8 +156,3 @@ export type ActivityResult = z.infer<typeof ActivityResultSchema>
 export type ThreadResult = z.infer<typeof ThreadResultSchema>
 export type PublishPostResult = z.infer<typeof PublishPostResultSchema>
 export type ReplyResult = z.infer<typeof ReplyResultSchema>
-export type OperationResult =
-  | ActivityResult
-  | ThreadResult
-  | PublishPostResult
-  | ReplyResult

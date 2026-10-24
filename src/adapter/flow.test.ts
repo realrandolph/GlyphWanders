@@ -13,6 +13,7 @@ import {
 } from '../server/executor.ts'
 import {createJournal} from '../server/journal.ts'
 import {MemoryRedis} from '../server/memory-redis.ts'
+import {createRateGate} from '../server/rate-limit.ts'
 import {createOnReq} from '../server/server.ts'
 import {createAdapter} from './app.ts'
 import {verifyAccessToken} from './auth.ts'
@@ -88,7 +89,7 @@ test('real OAuth → adapter → Devvit MCP → mocked Reddit/native Redis flow,
   const backend = createServer(async (req, res) => {
     assert.equal(req.headers.authorization, `Bearer ${config.DEVVIT_TOKEN}`)
     const handler = createOnReq({
-      executor: createExecutor(api),
+      executor: createExecutor(api, 'GlyphsPlayground', createRateGate(redis)),
       journal: createJournal(redis),
       getComment: api.getCommentById,
     })
@@ -131,18 +132,19 @@ test('real OAuth → adapter → Devvit MCP → mocked Reddit/native Redis flow,
     assert.equal(replyWrites, 1)
     const memory = await client.callTool({name: 'read_memory', arguments: {}})
     assert.ok(memory.structuredContent)
-    assert.equal(
-      (memory.structuredContent.memory as {version: number}).version,
-      2,
-    )
-    assert.equal((memory.structuredContent.memory as {value: null}).value, null)
+    const doc = memory.structuredContent as {
+      memory: {version: number; value: string | null}
+    }
+    assert.equal(doc.memory.version, 2)
+    assert.equal(doc.memory.value, null)
     const history = await client.callTool({
       name: 'participation_history',
       arguments: {},
     })
     assert.ok(history.structuredContent)
     assert.equal(
-      (history.structuredContent.publications as unknown[]).length,
+      (history.structuredContent as {publications: unknown[]}).publications
+        .length,
       2,
     )
     const thread = await client.callTool({
@@ -151,8 +153,7 @@ test('real OAuth → adapter → Devvit MCP → mocked Reddit/native Redis flow,
     })
     assert.equal(thread.isError, undefined)
     assert.equal(
-      thread.structuredContent?.post &&
-        (thread.structuredContent.post as {id: string}).id,
+      (thread.structuredContent as {post: {id: string}}).post.id,
       't3_mocked',
     )
     // A new request id with identical content is still not permission to duplicate publication.
