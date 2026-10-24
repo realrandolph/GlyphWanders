@@ -1,15 +1,17 @@
 import assert from 'node:assert/strict'
 import {test} from 'node:test'
 import {generateKeyPair, SignJWT} from 'jose'
-import {verifyAccessToken} from './app.ts'
+import {verifyAccessToken} from './auth.ts'
 import {configSchema} from './config.ts'
 
-test('JWT signatures, issuer, audience, expiry, not-before and required claims', async () => {
+test('JWT signature, issuer, resource audience, expiry and not-before are enforced', async () => {
   const config = configSchema.parse({
     PUBLIC_URL: 'https://glyph.example',
     OAUTH_ISSUER: 'https://auth.example/',
     OAUTH_SUBJECT: 'owner',
-    WORKER_TOKEN: 'x'.repeat(40),
+    DEVVIT_MCP_URL:
+      'https://glyphwanders-abc123-external.devvit.net/external/mcp',
+    DEVVIT_TOKEN: `devvit_at_${'x'.repeat(40)}`,
   })
   const {privateKey, publicKey} = await generateKeyPair('RS256')
   const sign = (changes: Record<string, unknown> = {}) =>
@@ -28,28 +30,25 @@ test('JWT signatures, issuer, audience, expiry, not-before and required claims',
     scopes: ['glyph:read', 'glyph:publish'],
   })
   for (const bad of [
-    {iss: 'https://attacker.example/'},
-    {aud: 'other-resource'},
+    {iss: 'https://evil.example/'},
+    {aud: 'another-resource'},
     {exp: 1},
     {nbf: Math.floor(Date.now() / 1000) + 600},
     {exp: undefined},
     {sub: undefined},
-  ]) {
+  ])
     await assert.rejects(() =>
       sign(bad).then(token => verifyAccessToken(token, publicKey, config)),
     )
-  }
-  const otherKey = await generateKeyPair('RS256')
+  const other = await generateKeyPair('RS256')
   await assert.rejects(() =>
-    sign().then(token => verifyAccessToken(token, otherKey.publicKey, config)),
+    sign().then(token => verifyAccessToken(token, other.publicKey, config)),
   )
-  assert.equal(
-    configSchema.safeParse({...config, PUBLIC_URL: 'http://insecure.example'})
-      .success,
-    false,
-  )
-  assert.equal(
-    configSchema.safeParse({...config, WORKER_TOKEN: 'short'}).success,
-    false,
-  )
+  for (const changes of [
+    {PUBLIC_URL: 'http://plain.example'},
+    {DEVVIT_MCP_URL: 'https://evil.example/external/mcp'},
+    {DEVVIT_MCP_URL: `${config.DEVVIT_MCP_URL}?externalToken=secret`},
+    {DEVVIT_TOKEN: 'short'},
+  ])
+    assert.equal(configSchema.safeParse({...config, ...changes}).success, false)
 })

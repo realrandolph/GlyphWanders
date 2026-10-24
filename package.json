@@ -6,10 +6,9 @@
   "type": "module",
   "scripts": {
     "build": "npm run build:server -- --metafile=dist/server.meta.json --minify && npm run build:bridge",
-    "build:bridge": "esbuild --bundle --packages=external --platform=node --target=node24 --format=esm --outdir=dist/bridge src/bridge/index.ts",
-    "bridge:start": "node --env-file=.env dist/bridge/index.js",
+    "build:bridge": "esbuild --bundle --packages=external --platform=node --target=node24 --format=esm --outdir=dist/adapter src/adapter/index.ts",
+    "bridge:start": "node --env-file=.env dist/adapter/index.js",
     "bridge:smoke": "node --env-file=.env --experimental-strip-types scripts/smoke.ts",
-    "bridge:reconcile": "node --env-file=.env --experimental-strip-types scripts/reconcile.ts",
     "build:server": "esbuild --bundle --log-level=warning --sourcemap=linked --target=es2023 --format=cjs --outdir=dist/server --platform=node src/server/index.ts",
     "clean": "rm -rf dist/ public/*.js*",
     "format": "npm run lint -- --fix",
@@ -24,7 +23,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
     "@devvit/web": "0.15.0",
-    "@types/express": "^5.0.6",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@types/node": "24.19.1",
     "devvit": "0.15.0",
     "esbuild": "0.28.2",
@@ -34,9 +33,6 @@
     "node": ">=24.0.0"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.2",
-    "express": "^5.3.0",
-    "express-rate-limit": "^8.7.1",
     "jose": "^6.2.13",
     "zod": "^4.6.7"
   }

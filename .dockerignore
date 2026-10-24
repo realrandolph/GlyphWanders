@@ -2,7 +2,7 @@
 !package.json
 !package-lock.json
 !src/
-!src/bridge/
-!src/bridge/*.ts
+!src/adapter/
+!src/adapter/*.ts
 !src/shared/
 !src/shared/*.ts
