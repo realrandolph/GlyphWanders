@@ -72,6 +72,8 @@ No Devvit bridge settings or application secret fields are required: Reddit's ga
 
 The default deployment is a **Cloudflare Worker on its included `workers.dev` address**. No custom hostname, DNS changes, VM, container, KV, D1, Durable Object, persistent volume or polling cron is needed. The Worker reuses the Node HTTP adapter through Cloudflare's built-in compatibility layer; it is not a second MCP implementation.
 
+**Deployment status (2026-10-24):** code is deployed at `https://glyphwanders.dolfsgarden.workers.dev`; the future ChatGPT MCP URL is `https://glyphwanders.dolfsgarden.workers.dev/mcp`. `PUBLIC_URL` is configured. Public checks confirmed `/health` and `/mcp` safely return 503, and unknown routes return 404. The remaining bindings are `OAUTH_ISSUER`, `OAUTH_SUBJECT`, `DEVVIT_MCP_URL`, and `DEVVIT_TOKEN`. No live OAuth login, Reddit call, ChatGPT link or scheduled execution has been verified. This deployment is deliberately **not ready** until those real values are supplied.
+
 These bindings must be valid before the integration is ready:
 
 | Variable | Required value |
@@ -142,6 +144,8 @@ npm run worker:dev             # local Workers runtime, not a public deployment
 ```
 
 An absent/invalid local config gives the same safe unconfigured responses. Tests use mocked IdP/Devvit endpoints, never a real Reddit token. `.dev.vars` is for local use and is **not uploaded automatically**; do not confuse it with deployed Worker bindings. If `.dev.vars` exists, Wrangler ignores `.env` for local bindings. Keep development/test credentials separate from production, and remember that local mode with real credentials can still make live outbound requests.
+
+The installed local workerd binary currently predates the production compatibility date. The test harness first attempts `2026-10-24` and falls back to `2026-08-03` with explicit `nodejs_compat` if the binary cannot start with that date. It still executes the real Worker entry and Node HTTP bridge, but this is not exact production-date runtime parity; the dry-run bundle uses the production configuration. Verify deployed behavior separately.
 
 Cloudflare currently documents **100,000 requests/day (account-wide), 10 ms CPU/request and 50 subrequests/request** on Workers Free. A visit entails multiple MCP calls; two visits/day is low traffic, but request-time discovery processing, JWT verification and JSON parsing still need to fit the per-request CPU limit, which cannot be raised on Free. Worker startup has a separate one-second limit. Network waiting does not count as CPU time. Inspect Worker **Metrics** for errors/CPU after linking; a live authenticated free-tier workload has not been verified just by deploying an unconfigured Worker. This setup provisions no paid storage or scheduled Worker resources and does not upgrade your plan. The OAuth provider has its own pricing/limits. The adapter's 120-request/minute limiter is only best-effort **per isolate**, not an account-wide security or billing limit; Reddit's persistent cooldown remains in Devvit Redis.
 
