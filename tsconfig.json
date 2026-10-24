@@ -3,7 +3,7 @@
   "files": [],
   "references": [
     {"path": "./scripts/"},
-    {"path": "./src/bridge/"},
+    {"path": "./src/adapter/"},
     {"path": "./src/server/"},
     {"path": "./src/shared/"},
     {"path": "./src/test/"}

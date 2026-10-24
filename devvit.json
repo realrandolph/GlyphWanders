@@ -3,54 +3,20 @@
   "name": "glyphwanders",
   "server": {
     "dir": "dist/server",
-    "entry": "index.js"
-  },
-  "permissions": {
-    "http": {
-      "enable": true,
-      "domains": ["glyph.example.com"]
-    },
-    "reddit": true
-  },
-  "menu": {
-    "items": [
-      {
-        "label": "[glyphwanders] Poll worker",
-        "description": "Claim and execute at most one queued worker job.",
-        "forUserType": "moderator",
-        "location": "subreddit",
-        "endpoint": "/internal/menu/poll"
-      }
-    ]
-  },
-  "scheduler": {
-    "tasks": {
-      "worker-poll": {
-        "endpoint": "/internal/scheduler/poll",
-        "cron": "* * * * *"
+    "entry": "index.js",
+    "externalEndpoints": {
+      "mcp": {
+        "endpoint": "/external/mcp",
+        "scopes": ["global"]
       }
     }
+  },
+  "permissions": {
+    "redis": true,
+    "reddit": true
   },
   "triggers": {
     "onCommentCreate": "/internal/triggers/comment"
-  },
-  "settings": {
-    "global": {
-      "bridge-token": {
-        "type": "string",
-        "label": "Bridge worker token",
-        "helpText": "Bearer token sent to the bridge. Set with the Devvit CLI.",
-        "isSecret": true
-      }
-    },
-    "subreddit": {
-      "bridge-url": {
-        "type": "string",
-        "label": "Bridge base URL",
-        "helpText": "HTTPS base URL of the worker bridge. Its hostname must also be allowed in permissions.http.domains.",
-        "defaultValue": ""
-      }
-    }
   },
   "dev": {
     "subreddit": "GlyphsPlayground"

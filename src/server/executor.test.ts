@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import {test} from 'node:test'
+import {AppFailure} from './errors.ts'
 import {
   createExecutor,
   type RedditApi,
@@ -119,7 +120,7 @@ test('thread verifies the post before reading comments', async () => {
   assert.equal(commentsRead, false)
 })
 
-test('thread flattens nested replies newest first within the budget', async () => {
+test('thread walks nested replies depth-first within the budget', async () => {
   let options: Parameters<RedditApi['getComments']>[0] | undefined
   const reply: RedditComment = {
     ...comment,
@@ -157,19 +158,24 @@ test('thread flattens nested replies newest first within the budget', async () =
   const result = await executor.thread({
     postId: 't3_post1',
     commentId: 't1_focus',
+    offset: 0,
     limit: 3,
   })
   assert.equal(options?.postId, 't3_post1')
   assert.equal(options?.commentId, 't1_focus')
   assert.equal(options?.sort, 'new')
-  assert.equal(options?.limit, 3)
   assert.deepEqual(
     result.comments.map(c => c.id),
-    ['t1_reply1', 't1_comment2', 't1_comment1'],
+    ['t1_comment1', 't1_reply1', 't1_comment2'],
   )
-  assert.equal(result.comments[0]?.parentId, 't1_comment1')
-  assert.deepEqual(result.pagination, {count: 3, hasMore: false})
-  assert.deepEqual(result.comments[0], {
+  assert.equal(result.comments[1]?.parentId, 't1_comment1')
+  assert.deepEqual(result.pagination, {
+    count: 3,
+    hasMore: false,
+    nextOffset: null,
+    truncated: false,
+  })
+  assert.deepEqual(result.comments[1], {
     id: 't1_reply1',
     parentId: 't1_comment1',
     postId: 't3_post1',
@@ -180,7 +186,7 @@ test('thread flattens nested replies newest first within the budget', async () =
   })
 })
 
-test('thread rejects a focused comment from another post before retrieving it', async () => {
+test('thread rejects a focused comment from another post before reading it', async () => {
   let read = false
   const executor = createExecutor(
     makeApi({
@@ -193,37 +199,76 @@ test('thread rejects a focused comment from another post before retrieving it', 
     }),
   )
   await assert.rejects(
-    executor.thread({postId: post.id, commentId: comment.id, limit: 10}),
+    executor.thread({
+      postId: post.id,
+      commentId: comment.id,
+      offset: 0,
+      limit: 10,
+    }),
     /target_restricted/,
   )
   assert.equal(read, false)
 })
 
-test('thread does not fetch replies when queued comments exhaust the global budget', async () => {
-  let fetchedReplies = false
-  const nested = {
+test('thread pages the complete nested tree with offsets', async () => {
+  const reply1: RedditComment = {
     ...comment,
-    replies: {
-      hasMore: true,
-      get: async () => {
-        fetchedReplies = true
-        return [comment]
-      },
-    },
+    id: 't1_reply1',
+    parentId: 't1_comment1',
+    createdAt: new Date('2026-01-02T06:00:00.000Z'),
   }
+  const reply2: RedditComment = {
+    ...comment,
+    id: 't1_reply2',
+    parentId: 't1_comment1',
+    createdAt: new Date('2026-01-02T07:00:00.000Z'),
+  }
+  const root1: RedditComment = {
+    ...comment,
+    replies: listing([reply1, reply2]),
+  }
+  const root2: RedditComment = {...comment, id: 't1_comment2'}
   const executor = createExecutor(
     makeApi({
       getPostById: async () => post,
-      getComments: () => listing([nested, {...comment, id: 't1_second'}], true),
+      getComments: () => listing([root1, root2]),
     }),
   )
-  const result = await executor.thread({postId: post.id, limit: 2})
-  assert.equal(result.comments.length, 2)
-  assert.equal(result.pagination.hasMore, true)
-  assert.equal(fetchedReplies, false)
+
+  const first = await executor.thread({
+    postId: post.id,
+    offset: 0,
+    limit: 2,
+  })
+  assert.deepEqual(
+    first.comments.map(c => c.id),
+    ['t1_comment1', 't1_reply1'],
+  )
+  assert.deepEqual(first.pagination, {
+    count: 2,
+    hasMore: true,
+    nextOffset: 2,
+    truncated: false,
+  })
+
+  const second = await executor.thread({
+    postId: post.id,
+    offset: first.pagination.nextOffset ?? 0,
+    limit: 2,
+  })
+  assert.deepEqual(
+    second.comments.map(c => c.id),
+    ['t1_reply2', 't1_comment2'],
+  )
+  assert.deepEqual(second.pagination, {
+    count: 2,
+    hasMore: false,
+    nextOffset: null,
+    truncated: false,
+  })
 })
 
-test('thread reports truncation when the budget is reached', async () => {
+test('thread reports a continuation when the page limit cuts a branch', async () => {
   const reply: RedditComment = {
     ...comment,
     id: 't1_reply1',
@@ -237,9 +282,35 @@ test('thread reports truncation when the budget is reached', async () => {
     }),
   )
 
-  const result = await executor.thread({postId: 't3_post1', limit: 1})
+  const result = await executor.thread({
+    postId: 't3_post1',
+    offset: 0,
+    limit: 1,
+  })
   assert.equal(result.comments.length, 1)
   assert.equal(result.pagination.hasMore, true)
+  assert.equal(result.pagination.nextOffset, 1)
+})
+
+test('thread rejects an unreachable offset instead of claiming completion', async () => {
+  const many = Array.from({length: 6000}, (_, index) => ({
+    ...comment,
+    id: `t1_c${index}`,
+  }))
+  const executor = createExecutor(
+    makeApi({
+      getPostById: async () => post,
+      getComments: () => listing(many),
+    }),
+  )
+  await assert.rejects(
+    executor.thread({
+      postId: post.id,
+      offset: 5500,
+      limit: 10,
+    }),
+    /thread_truncated/,
+  )
 })
 
 test('reply rejects a comment outside the target subreddit', async () => {
@@ -261,7 +332,7 @@ test('reply rejects a comment outside the target subreddit', async () => {
   assert.equal(submitted, false)
 })
 
-test('reply verifies comment and containing post before writing', async () => {
+test('reply verifies targets and reserves before the only write', async () => {
   const calls: string[] = []
   const executor = createExecutor(
     makeApi({
@@ -280,17 +351,45 @@ test('reply verifies comment and containing post before writing', async () => {
     }),
   )
 
-  const result = await executor.reply({
-    parentId: 't1_comment1',
-    body: 'hello',
-    requestId: 'r1',
-  })
+  const result = await executor.reply(
+    {
+      parentId: 't1_comment1',
+      body: 'hello',
+      requestId: 'r1',
+    },
+    async () => {
+      calls.push('reserve')
+    },
+  )
   assert.deepEqual(calls, [
     'comment:t1_comment1',
     'post:t3_post1',
+    'reserve',
     'submit:t1_comment1',
   ])
   assert.equal(result.comment.id, 't1_reply')
+})
+
+test('a throwing reservation hook prevents the write', async () => {
+  let submitted = false
+  const executor = createExecutor(
+    makeApi({
+      submitPost: async () => {
+        submitted = true
+        return post
+      },
+    }),
+  )
+  await assert.rejects(
+    executor.publishPost(
+      {title: 'Paper', body: 'Folded', requestId: 'r1'},
+      async () => {
+        throw new Error('no reservation')
+      },
+    ),
+    /no reservation/,
+  )
+  assert.equal(submitted, false)
 })
 
 test('publish_post writes only to the target subreddit', async () => {
@@ -315,4 +414,91 @@ test('publish_post writes only to the target subreddit', async () => {
     text: 'Folded',
   })
   assert.equal(result.post.id, 't3_new')
+})
+
+test('a 429 read records the persistent cooldown', async () => {
+  let failures = 0
+  const executor = createExecutor(
+    makeApi({
+      getNewPosts: () => ({
+        hasMore: false,
+        get: async () => {
+          throw new Error('429 Too Many Requests token=secret')
+        },
+      }),
+    }),
+    target,
+    {
+      assertReady: async () => undefined,
+      recordFailure: async () => {
+        failures++
+      },
+      recordSuccess: async () => undefined,
+    },
+  )
+  await assert.rejects(executor.activity({limit: 5}), /rate_limited/)
+  assert.equal(failures, 1)
+})
+
+test('a cooldown blocks before a write reservation is made', async () => {
+  let reserved = false
+  let submitted = false
+  const executor = createExecutor(
+    makeApi({
+      submitPost: async () => {
+        submitted = true
+        return post
+      },
+    }),
+    target,
+    {
+      assertReady: async () => {
+        throw new AppFailure('rate_limited')
+      },
+      recordFailure: async () => undefined,
+      recordSuccess: async () => undefined,
+    },
+  )
+  await assert.rejects(
+    executor.publishPost(
+      {title: 'A title', body: 'A body', requestId: 'r1'},
+      async () => {
+        reserved = true
+      },
+    ),
+    /rate_limited/,
+  )
+  assert.equal(reserved, false)
+  assert.equal(submitted, false)
+})
+
+test('a 429 write records the cooldown after its reservation', async () => {
+  let failures = 0
+  let reserved = false
+  const executor = createExecutor(
+    makeApi({
+      submitPost: async () => {
+        throw new Error('429 Too Many Requests')
+      },
+    }),
+    target,
+    {
+      assertReady: async () => undefined,
+      recordFailure: async () => {
+        failures++
+      },
+      recordSuccess: async () => undefined,
+    },
+  )
+  await assert.rejects(
+    executor.publishPost(
+      {title: 'A title', body: 'A body', requestId: 'r1'},
+      async () => {
+        reserved = true
+      },
+    ),
+    /rate_limited/,
+  )
+  assert.equal(reserved, true)
+  assert.equal(failures, 1)
 })

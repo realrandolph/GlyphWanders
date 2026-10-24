@@ -1,91 +1,143 @@
 import type {IncomingMessage, ServerResponse} from 'node:http'
-import type {TaskResponse} from '@devvit/web/server'
-import {context, reddit, settings} from '@devvit/web/server'
-import type {TriggerResponse, UiResponse} from '@devvit/web/shared'
-import {
-  BRIDGE_TOKEN_SETTING,
-  BRIDGE_URL_SETTING,
-  TARGET_SUBREDDIT,
-} from '../shared/contracts.ts'
-import {
-  type BridgeConfig,
-  type PollOutcome,
-  pollOnce,
-  postCommentEvent,
-} from './bridge.ts'
+import {context, redis} from '@devvit/web/server'
+import type {TriggerResponse} from '@devvit/web/shared'
+import {StreamableHTTPServerTransport} from '@modelcontextprotocol/sdk/server/streamableHttp.js'
+import {TARGET_SUBREDDIT} from '../shared/contracts.ts'
 import {handleCommentCreate} from './comment-events.ts'
 import {redditApi} from './devvit-reddit.ts'
 import {errorCode} from './errors.ts'
-import {createExecutor} from './executor.ts'
+import {createExecutor, type Executor} from './executor.ts'
+import {createJournal, type Journal} from './journal.ts'
+import {createMcpServer} from './mcp.ts'
+import {createRateGate} from './rate-limit.ts'
 
-const executor = createExecutor(redditApi)
+export type ServerDeps = {
+  executor: Executor
+  journal: Journal
+  getComment: typeof redditApi.getCommentById
+  target?: string
+}
+
+const defaultJournal = createJournal(redis)
+const defaultDeps: ServerDeps = {
+  executor: createExecutor(redditApi, TARGET_SUBREDDIT, createRateGate(redis)),
+  journal: defaultJournal,
+  getComment: id => redditApi.getCommentById(id),
+}
 
 type ErrorRsp = {error: string; status: number}
 
-export async function onReq(
-  reqMsg: IncomingMessage,
-  rspMsg: ServerResponse,
-): Promise<void> {
-  try {
-    await route(reqMsg, rspMsg)
-  } catch (err) {
-    const status = err instanceof HttpError ? err.status : 500
-    if (status >= 500) console.error(`request failed: ${errorCode(err)}`)
-    writeJson<ErrorRsp>(
-      status,
-      {
-        error: status === 403 ? 'forbidden' : 'internal error',
+/** A request handler with injectable dependencies for local tests. */
+export function createOnReq(deps: ServerDeps = defaultDeps) {
+  return async function onRequest(
+    reqMsg: IncomingMessage,
+    rspMsg: ServerResponse,
+  ): Promise<void> {
+    try {
+      await route(reqMsg, rspMsg, deps)
+    } catch (err) {
+      if (rspMsg.headersSent) {
+        rspMsg.end()
+        return
+      }
+      const status = err instanceof HttpError ? err.status : 500
+      if (status >= 500) console.error(`request failed: ${errorCode(err)}`)
+      writeJson<ErrorRsp>(
         status,
-      },
-      rspMsg,
-    )
+        {
+          error: status === 403 ? 'forbidden' : 'internal error',
+          status,
+        },
+        rspMsg,
+      )
+    }
   }
 }
+
+export const onReq = createOnReq()
 
 async function route(
   reqMsg: IncomingMessage,
   rspMsg: ServerResponse,
+  deps: ServerDeps,
 ): Promise<void> {
   const path = (reqMsg.url ?? '').split('?')[0]
 
+  if (reqMsg.method === 'POST' && path === '/external/mcp') {
+    if (!isTarget(deps)) throw new HttpError(403, 'forbidden')
+    await handleMcp(reqMsg, rspMsg, deps)
+    return
+  }
+
   if (reqMsg.method === 'POST' && path === '/internal/triggers/comment') {
-    const rsp = await commentTrigger(reqMsg)
-    writeJson<TriggerResponse>(200, rsp, rspMsg)
+    if (!isTarget(deps)) {
+      reqMsg.resume()
+      writeJson<TriggerResponse>(200, {}, rspMsg)
+      return
+    }
+    const response = await commentTrigger(reqMsg, deps)
+    writeJson<TriggerResponse>(200, response, rspMsg)
     return
   }
 
   reqMsg.resume()
-
-  if (reqMsg.method === 'POST' && path === '/internal/scheduler/poll') {
-    if (!isTargetSubreddit()) throw new HttpError(403, 'forbidden')
-    await pollAtTarget()
-    writeJson<TaskResponse>(200, {}, rspMsg)
+  if (path === '/external/mcp') {
+    rspMsg.setHeader('Allow', 'POST')
+    writeJson<ErrorRsp>(405, {error: 'method not allowed', status: 405}, rspMsg)
     return
   }
-
-  if (reqMsg.method === 'POST' && path === '/internal/menu/poll') {
-    const rsp = await pollFromMenu()
-    writeJson<UiResponse>(200, rsp, rspMsg)
-    return
-  }
-
   writeJson<ErrorRsp>(404, {error: 'not found', status: 404}, rspMsg)
 }
 
-/** Target-only, best-effort; events are not backfilled or retried. */
-async function commentTrigger(
+/**
+ * The Devvit platform validates the managed token before this handler runs.
+ * The context subreddit check is the app-level boundary on top of that.
+ */
+function isTarget(deps: ServerDeps): boolean {
+  const target = deps.target ?? TARGET_SUBREDDIT
+  return context.subredditName?.toLowerCase() === target.toLowerCase()
+}
+
+async function handleMcp(
   reqMsg: IncomingMessage,
-): Promise<TriggerResponse> {
-  if (!isTargetSubreddit()) {
-    reqMsg.resume()
-    return {}
-  }
-  const config = await getBridgeConfig()
-  if (!config.url || !config.token) {
-    reqMsg.resume()
-    return {}
+  rspMsg: ServerResponse,
+  deps: ServerDeps,
+): Promise<void> {
+  let body: unknown
+  try {
+    body = await readJson(reqMsg)
+  } catch (err) {
+    if (err instanceof HttpError) throw err
+    writeJson(
+      400,
+      {
+        jsonrpc: '2.0',
+        error: {code: -32700, message: 'Parse error'},
+        id: null,
+      },
+      rspMsg,
+    )
+    return
   }
 
+  const server = createMcpServer(deps)
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true,
+  })
+  try {
+    await server.connect(transport)
+    await transport.handleRequest(reqMsg, rspMsg, body)
+  } finally {
+    await server.close().catch(() => undefined)
+  }
+}
+
+/** Target-only, best-effort metadata capture. No comment text is persisted. */
+async function commentTrigger(
+  reqMsg: IncomingMessage,
+  deps: ServerDeps,
+): Promise<TriggerResponse> {
   let payload: unknown
   try {
     payload = await readJson(reqMsg)
@@ -95,91 +147,14 @@ async function commentTrigger(
 
   try {
     await handleCommentCreate(payload, {
-      getComment: id => redditApi.getCommentById(id),
-      postComment: event => postCommentEvent(config, event.comment),
+      getComment: id => deps.getComment(id),
+      record: event => deps.journal.recordComment(event),
+      target: deps.target,
     })
   } catch (err) {
     console.error(`comment event failed: ${errorCode(err)}`)
   }
   return {}
-}
-
-async function pollFromMenu(): Promise<UiResponse> {
-  if (!isTargetSubreddit()) {
-    return toast(`Worker is restricted to r/${TARGET_SUBREDDIT}.`)
-  }
-  if (!(await isModerator())) {
-    return toast('Only moderators can poll the worker.')
-  }
-
-  try {
-    const outcome = await pollAtTarget()
-    return toast(
-      messageFor(outcome),
-      outcome.status === 'completed' && outcome.ok,
-    )
-  } catch (err) {
-    console.error(`poll failed: ${errorCode(err)}`)
-    return toast('Worker poll failed.')
-  }
-}
-
-async function getBridgeConfig(): Promise<BridgeConfig> {
-  const [url, token] = await Promise.all([
-    settings.get<string>(BRIDGE_URL_SETTING),
-    settings.get<string>(BRIDGE_TOKEN_SETTING),
-  ])
-  return {
-    url: typeof url === 'string' ? url : '',
-    token: typeof token === 'string' ? token : '',
-  }
-}
-
-async function pollAtTarget(): Promise<PollOutcome> {
-  return pollOnce({
-    getConfig: getBridgeConfig,
-    execute: job => executor.execute(job),
-  })
-}
-
-function messageFor(outcome: PollOutcome): string {
-  switch (outcome.status) {
-    case 'skipped':
-      return 'Bridge is not configured.'
-    case 'idle':
-      return 'No worker jobs are queued.'
-    case 'completed':
-      if (!outcome.ok) return 'Worker job failed and was reported.'
-      return `Completed ${outcome.kind ?? 'worker'} job.`
-  }
-}
-
-function toast(text: string, success = false): UiResponse {
-  return {
-    showToast: {text, appearance: success ? 'success' : 'neutral'},
-  }
-}
-
-function isTargetSubreddit(): boolean {
-  return context.subredditName?.toLowerCase() === TARGET_SUBREDDIT.toLowerCase()
-}
-
-async function isModerator(): Promise<boolean> {
-  const username = context.username || (await reddit.getCurrentUsername())
-  if (!username) return false
-  try {
-    const listing = reddit.getModerators({
-      subredditName: TARGET_SUBREDDIT,
-      username,
-      limit: 1,
-    })
-    const moderators = await listing.get(1)
-    return moderators.some(
-      mod => mod.username.toLowerCase() === username.toLowerCase(),
-    )
-  } catch {
-    return false
-  }
 }
 
 async function readJson(reqMsg: IncomingMessage): Promise<unknown> {

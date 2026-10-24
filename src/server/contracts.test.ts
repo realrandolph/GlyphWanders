@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import {test} from 'node:test'
 import {
   ActivityArgsSchema,
-  ClaimRequestSchema,
   PublishPostArgsSchema,
   ReplyArgsSchema,
   TARGET_SUBREDDIT,
@@ -23,9 +22,17 @@ test('activity defaults and bounds', () => {
   )
 })
 
-test('thread requires a post id and caps the limit', () => {
+test('thread requires a post id and bounds offset and limit', () => {
   assert.equal(ThreadArgsSchema.safeParse({postId: 't1_abc'}).success, false)
   assert.equal(ThreadArgsSchema.safeParse({postId: 't3_abc'}).success, true)
+  assert.equal(
+    ThreadArgsSchema.safeParse({postId: 't3_abc', offset: 0}).success,
+    true,
+  )
+  assert.equal(
+    ThreadArgsSchema.safeParse({postId: 't3_abc', offset: 10001}).success,
+    false,
+  )
   assert.equal(
     ThreadArgsSchema.safeParse({postId: 't3_abc', commentId: 't1_focus'})
       .success,
@@ -42,12 +49,12 @@ test('thread requires a post id and caps the limit', () => {
   )
 })
 
-test('writes validate lengths and request ids', () => {
+test('writes validate lengths', () => {
   assert.equal(
     PublishPostArgsSchema.safeParse({
       title: 'x'.repeat(301),
       body: '',
-      requestId: 'r1',
+      requestId: '11111111-1111-4111-8111-111111111111',
     }).success,
     false,
   )
@@ -55,7 +62,7 @@ test('writes validate lengths and request ids', () => {
     PublishPostArgsSchema.safeParse({
       title: 'Title',
       body: 'x'.repeat(40001),
-      requestId: 'r1',
+      requestId: '11111111-1111-4111-8111-111111111111',
     }).success,
     false,
   )
@@ -63,7 +70,7 @@ test('writes validate lengths and request ids', () => {
     ReplyArgsSchema.safeParse({
       parentId: 't2_abc',
       body: 'hello',
-      requestId: 'r1',
+      requestId: '11111111-1111-4111-8111-111111111111',
     }).success,
     false,
   )
@@ -71,19 +78,12 @@ test('writes validate lengths and request ids', () => {
     ReplyArgsSchema.safeParse({
       parentId: 't1_abc',
       body: 'x'.repeat(10001),
-      requestId: 'r1',
+      requestId: '11111111-1111-4111-8111-111111111111',
     }).success,
     false,
   )
 })
 
-test('claim is restricted to the target subreddit', () => {
-  assert.equal(
-    ClaimRequestSchema.safeParse({subreddit: TARGET_SUBREDDIT}).success,
-    true,
-  )
-  assert.equal(
-    ClaimRequestSchema.safeParse({subreddit: 'OtherSubreddit'}).success,
-    false,
-  )
+test('the target is a single global subreddit', () => {
+  assert.equal(TARGET_SUBREDDIT, 'GlyphsPlayground')
 })
