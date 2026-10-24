@@ -169,7 +169,7 @@ docker run -d --name glyphwanders-adapter --restart unless-stopped --env-file .e
   -e HOST=0.0.0.0 -p 127.0.0.1:3000:3000 glyphwanders-adapter
 ```
 
-No volume is needed. No OpenAI API key, worker token or SQLite path exists.
+No volume or OpenAI API key is needed. The obsolete polling-worker `WORKER_TOKEN` and SQLite path are not used; the Cloudflare Worker still needs its `DEVVIT_TOKEN` binding.
 
 ## 3. Connect the existing Glyph chat in ChatGPT
 
