@@ -72,6 +72,8 @@ No Devvit bridge settings or application secret fields are required: Reddit's ga
 
 The default deployment is a **Cloudflare Worker on its included `workers.dev` address**. No custom hostname, DNS changes, VM, container, KV, D1, Durable Object, persistent volume or polling cron is needed. The Worker reuses the Node HTTP adapter through Cloudflare's built-in compatibility layer; it is not a second MCP implementation.
 
+**Deployment status (2026-10-24):** code is deployed at `https://glyphwanders.dolfsgarden.workers.dev`; the future ChatGPT MCP URL is `https://glyphwanders.dolfsgarden.workers.dev/mcp`. `PUBLIC_URL` is configured. Public checks confirmed `/health` and `/mcp` safely return 503, and unknown routes return 404. The remaining bindings are `OAUTH_ISSUER`, `OAUTH_SUBJECT`, `DEVVIT_MCP_URL`, and `DEVVIT_TOKEN`. No live OAuth login, Reddit call, ChatGPT link or scheduled execution has been verified. This deployment is deliberately **not ready** until those real values are supplied.
+
 These bindings must be valid before the integration is ready:
 
 | Variable | Required value |
