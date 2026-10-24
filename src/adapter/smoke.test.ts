@@ -3,7 +3,8 @@ import {test} from 'node:test'
 import type {Client} from '@modelcontextprotocol/sdk/client/index.js'
 import {runSmoke} from '../../scripts/smoke.ts'
 
-test('manual smoke defaults to read-only; explicit flags verify persistence and publication deduplication', async () => {
+test('manual smoke defaults to read-only; explicit flags verify persistence and publication deduplication', async t => {
+  t.mock.method(console, 'info', () => {})
   const calls: string[] = []
   let memory = {value: 'consequential prior note', version: 2}
   const publications = new Set<string>()

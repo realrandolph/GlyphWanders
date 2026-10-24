@@ -18,7 +18,8 @@ import {createAdapter} from './app.ts'
 import {verifyAccessToken} from './auth.ts'
 import {configSchema} from './config.ts'
 
-test('real OAuth → adapter → Devvit MCP → mocked Reddit/native Redis flow, including safe smoke flags', async () => {
+test('real OAuth → adapter → Devvit MCP → mocked Reddit/native Redis flow, including safe smoke flags', async t => {
+  t.mock.method(console, 'info', () => {})
   const config = configSchema.parse({
     PUBLIC_URL: 'https://glyph.example',
     OAUTH_ISSUER: 'https://auth.example/',
