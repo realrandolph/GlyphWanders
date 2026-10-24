@@ -30,6 +30,7 @@ export type RedisLike = {
 }
 
 export type TxLike = {
+  get(key: string): Promise<unknown>
   multi(): Promise<unknown>
   set(key: string, value: string): Promise<unknown>
   exec(): Promise<unknown[] | null>
@@ -38,11 +39,13 @@ export type TxLike = {
 }
 
 export const PUBLICATION_KEY = 'glyphwanders:publications'
+export const PUBLICATION_HISTORY_KEY = 'glyphwanders:publication-history'
 export const MEMORY_KEY = 'glyphwanders:memory'
 export const RECENT_COMMENT_KEY = 'glyphwanders:recent-comments'
 export const VISITED_KEY = 'glyphwanders:visited'
 
 const HISTORY_MAX = 100
+const HISTORY_INDEX_MAX = 1_000
 const RECENT_COMMENT_MAX = 100
 const VISITED_MAX = 200
 
@@ -120,6 +123,37 @@ export function createJournal(
     throw new AppFailure('journal_unavailable')
   }
 
+  async function indexEntry(
+    entry: JournalEntry,
+    required: boolean,
+  ): Promise<void> {
+    if (entry.status === 'duplicate') return
+    const score = Date.parse(entry.updatedAt)
+    try {
+      await guard(() =>
+        redis.zAdd(PUBLICATION_HISTORY_KEY, {
+          member: entry.requestId,
+          score: Number.isFinite(score) ? score : Date.now(),
+        }),
+      )
+    } catch (err) {
+      if (required) throw err
+      return
+    }
+    try {
+      const count = await redis.zCard(PUBLICATION_HISTORY_KEY)
+      if (count > HISTORY_INDEX_MAX) {
+        await redis.zRemRangeByRank(
+          PUBLICATION_HISTORY_KEY,
+          0,
+          count - HISTORY_INDEX_MAX - 1,
+        )
+      }
+    } catch {
+      // Trimming is best effort; the permanent content-dedup hash is intact.
+    }
+  }
+
   /**
    * Reserves a pending publication before any Reddit write. Both the request
    * field and normalized-content alias are first-writer-wins, so retries,
@@ -141,10 +175,17 @@ export function createJournal(
       const existing = await readEntry(requestField)
       if (existing) {
         if (existing.hash !== hash) throw new AppFailure('journal_conflict')
-        return {
-          entry: await resolveEntry(requestField, existing),
-          duplicate: true,
+        // Repair an alias left missing by an interruption, without ever
+        // overwriting an owner that won concurrently.
+        const alias = await guard(() => redis.hGet(PUBLICATION_KEY, aliasField))
+        if (!alias) {
+          await guard(() =>
+            redis.hSetNX(PUBLICATION_KEY, aliasField, requestField),
+          )
         }
+        const entry = await resolveEntry(requestField, existing)
+        await indexEntry(entry, false)
+        return {entry, duplicate: true}
       }
 
       const ownerField = await guard(() =>
@@ -152,13 +193,33 @@ export function createJournal(
       )
       if (ownerField) {
         const owner = await readEntry(ownerField)
-        if (owner) {
-          return {
-            entry: await resolveEntry(ownerField, owner),
-            duplicate: true,
-          }
+        if (!owner) throw new AppFailure('journal_unavailable')
+
+        const now = new Date().toISOString()
+        const link: StoredEntry = {
+          kind: input.kind,
+          ...(input.parentId ? {parentId: input.parentId} : {}),
+          hash,
+          status: 'duplicate',
+          duplicateOf: ownerField,
+          createdAt: now,
+          updatedAt: now,
         }
-        throw new AppFailure('journal_unavailable')
+        const linked = await guard(() =>
+          redis.hSetNX(PUBLICATION_KEY, requestField, JSON.stringify(link)),
+        )
+        if (linked <= 0) {
+          const raced = await readEntry(requestField)
+          if (!raced || raced.hash !== hash) {
+            throw new AppFailure('journal_conflict')
+          }
+          const entry = await resolveEntry(requestField, raced)
+          await indexEntry(entry, false)
+          return {entry, duplicate: true}
+        }
+        const entry = await resolveEntry(ownerField, owner)
+        await indexEntry(entry, false)
+        return {entry, duplicate: true}
       }
 
       const now = new Date().toISOString()
@@ -179,10 +240,11 @@ export function createJournal(
         redis.hSetNX(PUBLICATION_KEY, aliasField, requestField),
       )
       if (aliased > 0) {
-        return {
-          entry: {...pending, requestId},
-          duplicate: false,
-        }
+        const entry = {...pending, requestId}
+        // Index failure aborts before Reddit. The pending hash still blocks
+        // any retry from writing, so recovery is always fail-closed.
+        await indexEntry(entry, true)
+        return {entry, duplicate: false}
       }
 
       // A concurrent identical request won the content alias. Link this request
@@ -203,10 +265,9 @@ export function createJournal(
           [requestField]: JSON.stringify(link),
         }),
       )
-      return {
-        entry: await resolveEntry(winnerField, winner),
-        duplicate: true,
-      }
+      const entry = await resolveEntry(winnerField, winner)
+      await indexEntry(entry, false)
+      return {entry, duplicate: true}
     }
     throw new AppFailure('journal_unavailable')
   }
@@ -237,20 +298,21 @@ export function createJournal(
         [`r:${entry.requestId}`]: JSON.stringify(next),
       }),
     )
+    await indexEntry({...next, requestId: entry.requestId}, true)
   }
 
   async function history(limit: number): Promise<History> {
-    const all = await guard(() => redis.hGetAll(PUBLICATION_KEY))
+    const count = Math.min(limit, HISTORY_MAX)
+    const rows = await guard(() =>
+      redis.zRange(PUBLICATION_HISTORY_KEY, 0, count - 1, {
+        by: 'rank',
+        reverse: true,
+      }),
+    )
     const publications: History['publications'] = []
-    for (const [field, raw] of Object.entries(all)) {
-      if (!field.startsWith('r:')) continue
-      let entry: JournalEntry
-      try {
-        entry = parseEntry(field.slice(2), raw)
-      } catch {
-        continue
-      }
-      if (entry.status === 'duplicate') continue
+    for (const row of rows) {
+      const entry = await readEntry(`r:${row.member}`)
+      if (!entry || entry.status === 'duplicate') continue
       publications.push({
         requestId: entry.requestId,
         kind: entry.kind,
@@ -260,9 +322,8 @@ export function createJournal(
         updatedAt: entry.updatedAt,
       })
     }
-    publications.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     return {
-      publications: publications.slice(0, Math.min(limit, HISTORY_MAX)),
+      publications,
       visitedPosts: await visitedPosts(limit),
     }
   }
@@ -342,9 +403,12 @@ export function createJournal(
     expectedVersion: number,
   ): Promise<MemoryDoc> {
     const tx = await guard(() => redis.watch(MEMORY_KEY))
+    let multiStarted = false
     let executed = false
     try {
-      const current = parseMemory(await guard(() => redis.get(MEMORY_KEY)))
+      const current = parseMemory(
+        await guard(() => readWatched(tx, redis, MEMORY_KEY)),
+      )
       if (current.version !== expectedVersion) throw new MemoryConflict(current)
       const next: MemoryDoc = {
         value,
@@ -352,13 +416,19 @@ export function createJournal(
         updatedAt: new Date().toISOString(),
       }
       await guard(() => tx.multi())
+      multiStarted = true
       await guard(() => tx.set(MEMORY_KEY, JSON.stringify(next)))
       const result = await guard(() => tx.exec())
       executed = true
-      if (result === null) throw new MemoryConflict(current)
+      if (result === null) {
+        throw new MemoryConflict(await readMemory().catch(() => current))
+      }
       return next
     } catch (err) {
-      if (!executed) await tx.discard().catch(() => undefined)
+      // UNWATCH releases a WATCH that never reached MULTI; DISCARD releases
+      // queued commands after MULTI. Never delete another owner's state.
+      if (!multiStarted) await tx.unwatch().catch(() => undefined)
+      else if (!executed) await tx.discard().catch(() => undefined)
       throw err
     }
   }
@@ -458,4 +528,25 @@ async function guard<T>(fn: () => Promise<T>): Promise<T> {
     if (err instanceof AppFailure) throw err
     throw new AppFailure('journal_unavailable')
   }
+}
+
+/**
+ * Read through a watched transaction. Devvit 0.15's TxClient.get is typed as
+ * returning the client itself, so when no string arrives (or the transaction
+ * rejects a pre-MULTI read) we read the watched key through the base client
+ * before EXEC. The WATCH still detects any change after it was installed.
+ */
+export async function readWatched(
+  tx: TxLike,
+  redis: RedisLike,
+  key: string,
+): Promise<string | undefined> {
+  try {
+    const value = await tx.get(key)
+    if (typeof value === 'string') return value
+    if (typeof value === 'undefined') return undefined
+  } catch {
+    // Fall through to the base read; WATCH remains installed.
+  }
+  return redis.get(key)
 }

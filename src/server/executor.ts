@@ -11,7 +11,14 @@ import {
   type ThreadArgs,
   type ThreadResult,
 } from '../shared/contracts.ts'
-import {AppFailure, errorCode, withReadRetry} from './errors.ts'
+import {AppFailure, errorCode} from './errors.ts'
+import type {RateGate} from './rate-limit.ts'
+
+const noopGate: RateGate = {
+  assertReady: async () => undefined,
+  recordFailure: async () => undefined,
+  recordSuccess: async () => undefined,
+}
 
 /** The subset of Reddit data the app is allowed to read. */
 export type RedditPost = {
@@ -105,6 +112,7 @@ type Frame = ListFrame | NodeFrame
 export function createExecutor(
   api: RedditApi,
   target: string = TARGET_SUBREDDIT,
+  gate: RateGate = noopGate,
 ): Executor {
   function assertTarget(subredditName: string): void {
     if (subredditName.toLowerCase() !== target.toLowerCase()) {
@@ -116,20 +124,40 @@ export function createExecutor(
     return thing.subredditName.toLowerCase() === target.toLowerCase()
   }
 
-  /** Read-only Reddit calls retry transient failures; writes never do. */
+  /** Cooldown is checked before every Reddit call and persisted on 429. */
   async function redditRead<T>(fn: () => Promise<T>): Promise<T> {
-    return withReadRetry(async () => {
-      try {
-        return await fn()
-      } catch (err) {
-        if (err instanceof AppFailure) throw err
-        throw new AppFailure(
-          errorCode(err) === 'rate_limited'
-            ? 'rate_limited'
-            : 'reddit_unavailable',
-        )
+    await gate.assertReady()
+    try {
+      const result = await fn()
+      await gate.recordSuccess().catch(() => undefined)
+      return result
+    } catch (err) {
+      const code = errorCode(err)
+      if (code === 'rate_limited') {
+        await gate.recordFailure().catch(() => undefined)
       }
-    })
+      if (err instanceof AppFailure) throw err
+      throw new AppFailure(
+        code === 'rate_limited' ? 'rate_limited' : 'reddit_unavailable',
+      )
+    }
+  }
+
+  async function redditWrite<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+      const result = await fn()
+      await gate.recordSuccess().catch(() => undefined)
+      return result
+    } catch (err) {
+      const code = errorCode(err)
+      if (code === 'rate_limited') {
+        await gate.recordFailure().catch(() => undefined)
+      }
+      if (err instanceof AppFailure) throw err
+      throw new AppFailure(
+        code === 'rate_limited' ? 'rate_limited' : 'reddit_unavailable',
+      )
+    }
   }
 
   async function activity(args: ActivityArgs): Promise<ActivityResult> {
@@ -294,12 +322,15 @@ export function createExecutor(
     args: PublishPostArgs,
     beforeWrite?: BeforeWrite,
   ): Promise<PublishPostResult> {
+    await gate.assertReady()
     await beforeWrite?.()
-    const post = await api.submitPost({
-      subredditName: target,
-      title: args.title,
-      text: args.body,
-    })
+    const post = await redditWrite(() =>
+      api.submitPost({
+        subredditName: target,
+        title: args.title,
+        text: args.body,
+      }),
+    )
     assertTarget(post.subredditName)
     return {post: toPost(post)}
   }
@@ -318,11 +349,14 @@ export function createExecutor(
       assertTarget(post.subredditName)
     }
 
+    await gate.assertReady()
     await beforeWrite?.()
-    const comment = await api.submitComment({
-      id: args.parentId,
-      text: args.body,
-    })
+    const comment = await redditWrite(() =>
+      api.submitComment({
+        id: args.parentId,
+        text: args.body,
+      }),
+    )
     assertTarget(comment.subredditName)
     return {comment: serializeComment(comment)}
   }

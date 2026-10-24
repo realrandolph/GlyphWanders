@@ -61,28 +61,3 @@ export function safeMessage(code: ErrorCode): string {
       return 'The operation failed safely.'
   }
 }
-
-/** Exponential backoff for read-only Reddit calls. Writes never retry. */
-export async function withReadRetry<T>(
-  fn: () => Promise<T>,
-  options: {attempts?: number; baseDelayMs?: number} = {},
-): Promise<T> {
-  const attempts = options.attempts ?? 3
-  const baseDelayMs = options.baseDelayMs ?? 120
-  let last: unknown
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    try {
-      return await fn()
-    } catch (err) {
-      last = err
-      const code = errorCode(err)
-      if (code !== 'rate_limited' && code !== 'reddit_unavailable') throw err
-      if (attempt + 1 < attempts) {
-        await new Promise(resolve =>
-          setTimeout(resolve, baseDelayMs * 2 ** attempt),
-        )
-      }
-    }
-  }
-  throw last
-}

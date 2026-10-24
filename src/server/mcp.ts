@@ -1,5 +1,9 @@
-import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js'
-import type {CallToolResult, Tool} from '@modelcontextprotocol/sdk/types.js'
+import {Server} from '@modelcontextprotocol/sdk/server/index.js'
+import {
+  CallToolRequestSchema,
+  type CallToolResult,
+  ListToolsRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js'
 import {z} from 'zod'
 import type {PublishPostArgs, ReplyArgs} from '../shared/contracts.ts'
 import {
@@ -32,28 +36,23 @@ class DuplicatePublication extends Error {
 }
 
 /** A fresh stateless MCP server per HTTP request. */
-export function createMcpServer(deps: McpDeps): McpServer {
-  const definitions = new Map<string, Tool>(
-    toolDefinitions().map(def => [def.name, def]),
-  )
-  const server = new McpServer(
+export function createMcpServer(deps: McpDeps): Server {
+  const server = new Server(
     {name: 'GlyphWanders', version: '1.0.0'},
-    {instructions: INSTRUCTIONS},
+    {capabilities: {tools: {}}, instructions: INSTRUCTIONS},
   )
 
-  for (const name of Object.keys(schemas) as ToolName[]) {
-    const definition = definitions.get(name)
-    if (!definition) continue
-    server.registerTool(
-      name,
-      {
-        description: definition.description,
-        inputSchema: schemas[name],
-        annotations: definition.annotations,
-      },
-      (args: unknown) => dispatch(name, args as Record<string, unknown>),
-    )
-  }
+  // The low-level handler returns toolDefinitions() verbatim so auth metadata
+  // (_meta.securitySchemes, the top-level securitySchemes and outputSchema) is
+  // not dropped by high-level registration.
+  server.setRequestHandler(ListToolsRequestSchema, () => ({
+    tools: toolDefinitions(),
+  }))
+  server.setRequestHandler(CallToolRequestSchema, request => {
+    const name = request.params.name
+    if (!Object.hasOwn(schemas, name)) return fail('invalid_arguments')
+    return dispatch(name as ToolName, request.params.arguments ?? {})
+  })
 
   async function dispatch(
     name: ToolName,

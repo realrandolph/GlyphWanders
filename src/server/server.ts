@@ -9,6 +9,7 @@ import {errorCode} from './errors.ts'
 import {createExecutor, type Executor} from './executor.ts'
 import {createJournal, type Journal} from './journal.ts'
 import {createMcpServer} from './mcp.ts'
+import {createRateGate} from './rate-limit.ts'
 
 export type ServerDeps = {
   executor: Executor
@@ -17,9 +18,10 @@ export type ServerDeps = {
   target?: string
 }
 
+const defaultJournal = createJournal(redis)
 const defaultDeps: ServerDeps = {
-  executor: createExecutor(redditApi),
-  journal: createJournal(redis),
+  executor: createExecutor(redditApi, TARGET_SUBREDDIT, createRateGate(redis)),
+  journal: defaultJournal,
   getComment: id => redditApi.getCommentById(id),
 }
 
@@ -80,6 +82,7 @@ async function route(
 
   if (reqMsg.method === 'POST' && path === '/internal/menu/journal') {
     reqMsg.resume()
+    if (!isTarget(deps)) throw new HttpError(403, 'forbidden')
     const response = await journalMenu(deps)
     writeJson<UiResponse>(200, response, rspMsg)
     return

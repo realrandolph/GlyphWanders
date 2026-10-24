@@ -7,6 +7,7 @@ import type {
 import {createExecutor} from './executor.ts'
 import {createJournal, type Reservation} from './journal.ts'
 import {MemoryRedis} from './memory-redis.ts'
+import {createRateGate, type RateGate} from './rate-limit.ts'
 import type {ServerDeps} from './server.ts'
 
 const target = 'GlyphsPlayground'
@@ -60,9 +61,10 @@ export type TestDeps = ServerDeps & {
     id?: string
   }>
   reservations: Reservation[]
+  rateGate: RateGate
 }
 
-export function createServerDeps(): TestDeps {
+export function createServerDeps(overrides: Partial<RedditApi> = {}): TestDeps {
   const submits: TestDeps['submits'] = []
   const reservations: Reservation[] = []
   const api: RedditApi = {
@@ -86,8 +88,11 @@ export function createServerDeps(): TestDeps {
       submits.push({kind: 'comment', body: options.text, id: options.id})
       return {...comment, id: 't1_new'}
     },
+    ...overrides,
   }
-  const journal = createJournal(new MemoryRedis())
+  const redis = new MemoryRedis()
+  const journal = createJournal(redis)
+  const rateGate = createRateGate(redis)
   const reserve = journal.reserve
   journal.reserve = async input => {
     const reservation = await reserve(input)
@@ -95,11 +100,12 @@ export function createServerDeps(): TestDeps {
     return reservation
   }
   return {
-    executor: createExecutor(api, target),
+    executor: createExecutor(api, target, rateGate),
     journal,
     getComment: id => api.getCommentById(id),
     target,
     submits,
     reservations,
+    rateGate,
   }
 }
